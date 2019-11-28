@@ -20,7 +20,7 @@ int stepper_home = 0;
 int stepperSpeed = 15000;
 int stepperAccel = 7500;
 long maxSteps = 46000;
-int extraStepIncement = 20000;
+int moveFurtherIncrement = 20000;
 
 // Create AccelStepper
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
@@ -32,14 +32,14 @@ void setup() {
     pinMode(home_switch, INPUT_PULLUP);
     pinMode(closed_switch, INPUT_PULLUP);
     pinMode(obstruct_switch, INPUT_PULLUP);
-    // Set up the obstruction switch as interupt:
+    // Set up the obstruction switch as interupt
     attachInterrupt(obstruct_switch, obstruction, FALLING);
-    // Stepper motor initialisation/homing
+
+    // Set up stepper motor and initialise with ensuring door is closed
     stepper.setPinsInverted (/*direction*/ false, /*step*/ false, /*enable*/ true);
     stepper.setEnablePin(enPin);
     stepper.setMaxSpeed(stepperSpeed);
     stepper.setAcceleration(stepperAccel);
-    // home_stepper();
     closeDoor();
 
 }
@@ -53,21 +53,20 @@ void obstruction() {
 void openDoor() {
     Serial.println("Opening door!");
     stepper.enableOutputs();
-    // stepper.moveTo(-maxSteps); // This is wrong as doesn't decel.
     stepper.moveTo(stepper_home);
-    long extraSteps = 0;
+    long moveFurther = 0;
     long pos = stepper.currentPosition();
     while (digitalRead(home_switch)) {
         stepper.run();
         pos = stepper.currentPosition();
-        if (pos < stepper_home && pos <= extraSteps ) {
+        if (pos < stepper_home && pos <= moveFurther ) {
             Serial.println("openDoor - Homing!");
-            extraSteps = pos - extraStepIncement;
-            stepper.moveTo(extraSteps);
+            moveFurther = pos - moveFurtherIncrement;
+            stepper.moveTo(moveFurther);
         }
     }
     stepper_home = 0;
-    stepper.setCurrentPosition(stepper_home);
+    stepper.setCurrentPosition(stepper_home); // Ensure stepper knows it where it should be
     Serial.println("Opened!");
     stepper.disableOutputs();
 }
@@ -76,19 +75,19 @@ void closeDoor() {
     Serial.println("Closing door!");
     stepper.enableOutputs();
     stepper.moveTo(maxSteps);
-    long extraSteps = 0;
+    long moveFurther = 0;
     long pos = stepper.currentPosition();
     while (digitalRead(closed_switch)) {
         stepper.run();
         pos = stepper.currentPosition();
-        if (pos > maxSteps && pos >= extraSteps ) {
+        if (pos > maxSteps && pos >= moveFurther ) {
             Serial.println("closeDoor - Homing!");
-            extraSteps = pos + extraStepIncement;
-            stepper.moveTo(extraSteps);
+            moveFurther = pos + moveFurtherIncrement;
+            stepper.moveTo(moveFurther);
         }
     }
-    maxSteps = stepper.currentPosition(); // The current pos is what we know we need to do next time. At least at to start with.
-    stepper.setCurrentPosition(maxSteps); // Update if we need to go further
+    maxSteps = stepper.currentPosition(); // The current pos is what we know we need to do next time
+    stepper.setCurrentPosition(maxSteps); // Ensure stepper knows it where it should be
     Serial.println("Closed!");
     stepper.disableOutputs();
 }
