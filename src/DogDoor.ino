@@ -1,3 +1,10 @@
+/*
+ * Project DogDoor
+ * Description:
+ * Author: Copyright (C) 2019 Martin Rowan
+ * Date:
+ */
+
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
 // Include the AccelStepper library:
 #include <AccelStepper.h>
@@ -157,19 +164,4 @@ void loop() {
         openDoor();
         delay(5000);
     }
-    // // Set the target position:
-    // // stepper.moveTo(45000);
-    // Serial.println("Move to Max");
-    // stepper.moveTo(closedPosistion);
-    // // Run to target position with set speed and acceleration/deceleration:
-    // stepper.enableOutputs();
-    // stepper.runToPosition();
-
-    // stepper.enableOutputs();
-    // delay(1000);
-
-    // // Move back to zero:
-
-
-    // delay(1000);
 }
