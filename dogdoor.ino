@@ -15,19 +15,35 @@ SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - http
 // Presence Sensors
 // TODO: Test and add
 
+// Particle Cloud variables
+int home_switch_status = 0;
+int closed_switch_status = 0;
+int obstruct_switch_status = 0;
+
 // Global Vars
 int stepper_home = 0;
 int stepperSpeed = 15000;
 int stepperAccel = 7500;
-long maxSteps = 46000;
+long closedPosistion = 0;
+long initial_closedPosistion = 46000;
 int moveFurtherIncrement = 20000;
 
 // Create AccelStepper
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
+// Create timer to send current variable values to cloud for switch state
+Timer timer(1000, publishVariables); // Every second
 
 void setup() {
-    //start serial connection
+    // Set up Particle cloud variables
+    Particle.variable("home_switch", home_switch_status);
+    Particle.variable("closed_switch", closed_switch_status);
+    Particle.variable("obstruct_switch", obstruct_switch_status);
+
+    // Start serial connection
     Serial.begin(9600);
+    // timer
+    timer.start();
+
     // Set up the limit switches:
     pinMode(home_switch, INPUT_PULLUP);
     pinMode(closed_switch, INPUT_PULLUP);
@@ -44,22 +60,48 @@ void setup() {
 
 }
 
+void publishVariables()
+{
+    // Update Particle Cloud variables
+    home_switch_status = digitalRead(home_switch);
+    closed_switch_status = digitalRead(closed_switch);
+    obstruct_switch_status = digitalRead(obstruct_switch);
+
+    // For Debugging outside of main loops
+    // static int count = 0;
+    // Serial.print("[");
+    // Serial.print(count++);
+    // Serial.print("] - Pos: ");
+    // Serial.print(stepper.currentPosition());
+    // Serial.print(" - ToGo: ");
+    // Serial.print(stepper.distanceToGo());
+    // Serial.print(" - closedPosistion: ");
+    // Serial.print(closedPosistion);
+    // Serial.print(" - home_switch_status: ");
+    // Serial.print(home_switch_status);
+    // Serial.print(" - closed_switch_status: ");
+    // Serial.print(closed_switch_status);
+    // Serial.println();
+}
+
 void obstruction() {
     Serial.println("Obstruction! Opening");
+    Particle.publish("obstruction-detected", PRIVATE);
     openDoor();
     // TODO: Reverse the direction - Aim for getting to zero
 }
 
 void openDoor() {
     Serial.println("Opening door!");
+    Particle.publish("Opening", PRIVATE);
     stepper.enableOutputs();
     stepper.moveTo(stepper_home);
     long moveFurther = 0;
-    long pos = stepper.currentPosition();
+    long pos;
     while (digitalRead(home_switch)) {
         stepper.run();
         pos = stepper.currentPosition();
-        if (pos < stepper_home && pos <= moveFurther ) {
+        if (pos <= stepper_home && pos <= moveFurther ) {
             Serial.println("openDoor - Homing!");
             moveFurther = pos - moveFurtherIncrement;
             stepper.moveTo(moveFurther);
@@ -68,27 +110,35 @@ void openDoor() {
     stepper_home = 0;
     stepper.setCurrentPosition(stepper_home); // Ensure stepper knows it where it should be
     Serial.println("Opened!");
-    stepper.disableOutputs();
+    Particle.publish("Opened", PRIVATE);
+    // stepper.disableOutputs();
 }
 
 void closeDoor() {
     Serial.println("Closing door!");
+    Particle.publish("Closing", PRIVATE);
     stepper.enableOutputs();
-    stepper.moveTo(maxSteps);
+
+    stepper.moveTo(closedPosistion);
     long moveFurther = 0;
     long pos = stepper.currentPosition();
     while (digitalRead(closed_switch)) {
         stepper.run();
         pos = stepper.currentPosition();
-        if (pos > maxSteps && pos >= moveFurther ) {
+        if ( pos == 0 || (pos >= closedPosistion && pos >= moveFurther )) {
             Serial.println("closeDoor - Homing!");
             moveFurther = pos + moveFurtherIncrement;
             stepper.moveTo(moveFurther);
         }
     }
-    maxSteps = stepper.currentPosition(); // The current pos is what we know we need to do next time
-    stepper.setCurrentPosition(maxSteps); // Ensure stepper knows it where it should be
+    // TODO: Fix if starting from closed
+    closedPosistion = pos; // The current pos is what we know we need to do next time
+    if (closedPosistion < 100) {  // We must be closed already, so at full range
+        closedPosistion = initial_closedPosistion;
+    }
+    stepper.setCurrentPosition(closedPosistion); // Ensure stepper knows it where it should be
     Serial.println("Closed!");
+    Particle.publish("Closed", PRIVATE);
     stepper.disableOutputs();
 }
 
@@ -110,7 +160,7 @@ void loop() {
     // // Set the target position:
     // // stepper.moveTo(45000);
     // Serial.println("Move to Max");
-    // stepper.moveTo(maxSteps);
+    // stepper.moveTo(closedPosistion);
     // // Run to target position with set speed and acceleration/deceleration:
     // stepper.enableOutputs();
     // stepper.runToPosition();
