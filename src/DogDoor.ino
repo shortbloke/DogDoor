@@ -56,10 +56,10 @@ void setup() {
     pinMode(closed_switch, INPUT_PULLUP);
     pinMode(obstruct_switch, INPUT_PULLUP);
     // Set up the obstruction switch as interupt
-    attachInterrupt(obstruct_switch, obstruction, FALLING);
+    attachInterrupt(obstruct_switch, obstructionISR, FALLING);
 
     // Set up stepper motor and initialise with ensuring door is closed
-    stepper.setPinsInverted (/*direction*/ false, /*step*/ false, /*enable*/ true);
+    stepper.setPinsInverted (/*direction*/ true, /*step*/ false, /*enable*/ true);
     stepper.setEnablePin(enPin);
     stepper.setMaxSpeed(stepperSpeed);
     stepper.setAcceleration(stepperAccel);
@@ -91,7 +91,7 @@ void publishVariables()
     // Serial.println();
 }
 
-void obstruction() {
+void obstructionISR() {
     Serial.println("Obstruction! Opening");
     Particle.publish("obstruction-detected", PRIVATE);
     openDoor();
@@ -118,7 +118,6 @@ void openDoor() {
     stepper.setCurrentPosition(stepper_home); // Ensure stepper knows it where it should be
     Serial.println("Opened!");
     Particle.publish("Opened", PRIVATE);
-    // stepper.disableOutputs();
 }
 
 void closeDoor() {
