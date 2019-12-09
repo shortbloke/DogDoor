@@ -29,8 +29,8 @@ int obstruct_switch_status = 0;
 
 // Global Vars
 int stepper_home = 0;
-int stepperSpeed = 15000;
-int stepperAccel = 7500;
+int stepperSpeed = 10000;
+int stepperAccel = 5000;
 long closedPosistion = 0;
 long initial_closedPosistion = 46000;
 int moveFurtherIncrement = 20000;
