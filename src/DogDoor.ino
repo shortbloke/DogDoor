@@ -115,10 +115,12 @@ void setup() {
 boolean presenseDetected() {
     // True if either sensor is active (high)
     if ( (digitalRead(indoorSensor)) or (digitalRead(outdoorSensor)) ) {
-        // Serial.print("Presence Detected - Indoor: ");
-        // Serial.print(digitalRead(indoorSensor));
-        // Serial.print(" - Outdoor: ");
-        // Serial.println(digitalRead(outdoorSensor));
+        if (debug) {
+            Serial.print("Presence Detected - Indoor: ");
+            Serial.print(digitalRead(indoorSensor));
+            Serial.print(" - Outdoor: ");
+            Serial.println(digitalRead(outdoorSensor));
+        }
         return true;
     }
     return false;
@@ -164,7 +166,6 @@ void publishVariables() {
 }
 
 void switchISR() {
-    // Serial.println("switchISR Called");
     if (digitalRead(homeSwitch)) {
         currentDoorState = OPEN;
     } else if (digitalRead(closedSwitch)) {
@@ -175,7 +176,6 @@ void switchISR() {
 }
 
 void presenseSensorISR() {
-    // Serial.println("presenseSensorISR Called");
     desiredDoorState = OPEN;
     keepOpenTimer.changePeriodFromISR(keepOpenTime);  // Set or reset the timer
 }
@@ -183,11 +183,15 @@ void presenseSensorISR() {
 void timerCallback() {
     if (presenseDetected()) {
         // Timer expired, but reset as presense detected
-        // Serial.print("timerCallback - Extending timer");
+        if (debug) {
+            Serial.print("timerCallback - Extending timer");
+        }
         keepOpenTimer.changePeriod(keepOpenTime);  //Set or reset the timer
     } else {
         // Timer expied and presence not detected.
-        // Serial.print("timerCallback - Timer expired");
+        if (debug) {
+            Serial.print("timerCallback - Timer expired");
+        }
         desiredDoorState = CLOSED;
     } 
 }
