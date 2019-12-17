@@ -28,7 +28,7 @@ int desiredDoorStateStatus = 0;
 int currentDoorStateStatus = 0;
 
 // Global Const
-const bool debug = true;
+const bool debug = false;
 
 // Stepper (MicroStepping 1/32)
 const int stepperSpeed = 10000;
