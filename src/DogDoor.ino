@@ -18,9 +18,13 @@
  */
 
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
+
 // Include the AccelStepper library:
 #include <AccelStepper.h>
 
+/**********************************************************************************************************************
+ * Define GPIO Pins
+ *********************************************************************************************************************/
 // Stepper
 #define enPin D0
 #define dirPin D1
@@ -42,13 +46,14 @@ SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - http
 # define keepOpen A0
 # define keepClosed A1
 
-// Particle Cloud variables
+/**********************************************************************************************************************
+ * Globals
+ *********************************************************************************************************************/
+// Particle Cloud
 int homeSwitchStatus = 0;
 int closedSwitchStatus = 0;
 int desiredDoorStateStatus = 0;
 int currentDoorStateStatus = 0;
-
-// Global Const
 const bool publish = true;
 
 // Stepper (MicroStepping 1/32)
@@ -62,11 +67,11 @@ const int keepOpenTime = 10000;  // 10 seconds
 const int cloudPublishInterval = 5000;  // 5 seconds
 const int serialLogInterval = 1000;  // 1 second
 
-// Global Vars
+// Limit end stop positions
 int openPosition = 0;
 long closedPosition = initialClosedPosition;
 
-// Global enum for states
+// Enum for states
 enum doorStates {
     DISABLED = 0,
     OPEN = 1,
@@ -77,6 +82,9 @@ enum doorStates {
 enum doorStates desiredDoorState;
 enum doorStates currentDoorState;
 
+/**********************************************************************************************************************
+ * Global Objects
+ *********************************************************************************************************************/
 // Create serial Logging handler
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
 // Create AccelStepper
@@ -88,6 +96,9 @@ Timer particleVarPublishTimer(cloudPublishInterval, publishVariables);
 // Timer for how long the door is kept open after no presense detected.
 Timer keepOpenTimer(keepOpenTime, timerCallback, true);
 
+/**********************************************************************************************************************
+ * Setup
+ *********************************************************************************************************************/
 void setup() {
     if (publish) {
         // Set up Particle cloud variables
@@ -136,6 +147,29 @@ void setup() {
     }
 }
 
+/**********************************************************************************************************************
+ * Interrupt Service Routines
+ *********************************************************************************************************************/
+void limitSwitchISR() {
+    if (digitalRead(homeSwitch)) {
+        currentDoorState = OPEN;
+    } else if (digitalRead(closedSwitch)) {
+        currentDoorState = CLOSED;
+    } else {
+        currentDoorState = MOVING;
+    }
+}
+
+void presenseSensorISR() {
+    if (!digitalRead(keepClosedSwitch)){
+        desiredDoorState = OPEN;
+        keepOpenTimer.changePeriodFromISR(keepOpenTime);  // Set or reset the timer
+    }
+}
+
+/**********************************************************************************************************************
+ * Functions
+ *********************************************************************************************************************/
 boolean presenseDetected() {
     // True if either sensor is active (high)
     if ( (digitalRead(indoorSensor)) or (digitalRead(outdoorSensor)) or (digitalRead(manualSwitch)) ) {
@@ -168,23 +202,6 @@ void publishVariables() {
 
     desiredDoorStateStatus = desiredDoorState;
     currentDoorStateStatus = currentDoorState;
-}
-
-void limitSwitchISR() {
-    if (digitalRead(homeSwitch)) {
-        currentDoorState = OPEN;
-    } else if (digitalRead(closedSwitch)) {
-        currentDoorState = CLOSED;
-    } else {
-        currentDoorState = MOVING;
-    }
-}
-
-void presenseSensorISR() {
-    if (!digitalRead(keepClosedSwitch)){
-        desiredDoorState = OPEN;
-        keepOpenTimer.changePeriodFromISR(keepOpenTime);  // Set or reset the timer
-    }
 }
 
 void timerCallback() {
@@ -229,6 +246,10 @@ void closeDoor() {
     }
 }
 
+
+/**********************************************************************************************************************
+ * Main Loop
+ *********************************************************************************************************************/
 void loop() {
     if ( ((desiredDoorState == OPEN) or (digitalRead(keepOpenSwitch))) and (!digitalRead(keepClosedSwitch)) ) {
         if (digitalRead(homeSwitch)) {
