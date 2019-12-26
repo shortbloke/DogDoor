@@ -49,6 +49,10 @@ SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - http
 /**********************************************************************************************************************
  * Globals
  *********************************************************************************************************************/
+// Build
+const char version[] = "1.0.0";
+const char buildDate[] = __DATE__ " " __TIME__;
+
 // Particle Cloud
 int homeSwitchStatus = 0;
 int closedSwitchStatus = 0;
@@ -64,8 +68,9 @@ const int moveFurtherIncrement = 10000;
 
 // Timers
 const int keepOpenTime = 10000;  // 10 seconds
-const int cloudPublishInterval = 5000;  // 5 seconds
-const int serialLogInterval = 1000;  // 1 second
+const int cloudPublishInterval = 30000;  // 30 seconds
+const int traceLogInterval = 5000;  // 5 second
+const int periodicLogInterval = 300000;  // 5 minutes
 
 // Limit end stop positions
 int openPosition = 0;
@@ -85,12 +90,14 @@ enum doorStates currentDoorState;
 /**********************************************************************************************************************
  * Global Objects
  *********************************************************************************************************************/
-// Create serial Logging handler
+// Create serial Logging handler, set log level
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
 // Create AccelStepper
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
-// Serial logging timer
-Timer serialLogTimer(serialLogInterval, serialLog);
+// Trace logging timer
+Timer traceLogTimer(traceLogInterval, traceLog);
+// Peridoc Log message timer
+Timer periodicLogTimer(periodicLogInterval, periodicLog);
 // Create timer to send current variable values to cloud for switch state
 Timer particleVarPublishTimer(cloudPublishInterval, publishVariables);
 // Timer for how long the door is kept open after no presense detected.
@@ -100,6 +107,7 @@ Timer keepOpenTimer(keepOpenTime, timerCallback, true);
  * Setup
  *********************************************************************************************************************/
 void setup() {
+    // Start background timers
     if (publish) {
         // Set up Particle cloud variables
         Particle.variable("homeSwitch", homeSwitchStatus);
@@ -109,8 +117,10 @@ void setup() {
         // Start background timers
         particleVarPublishTimer.start();
     }
-    Log.info("System version: %s", (const char*)System.version());
-    serialLogTimer.start();
+    traceLogTimer.start();
+    periodicLogTimer.start();
+    // Call initial periodicLog
+    periodicLog();
 
     // Set up the limit switches
     pinMode(homeSwitch, INPUT_PULLUP);
@@ -147,6 +157,7 @@ void setup() {
     }
 }
 
+
 /**********************************************************************************************************************
  * Interrupt Service Routines
  *********************************************************************************************************************/
@@ -167,6 +178,7 @@ void presenseSensorISR() {
     }
 }
 
+
 /**********************************************************************************************************************
  * Functions
  *********************************************************************************************************************/
@@ -180,7 +192,7 @@ boolean presenseDetected() {
     return false;
 }
 
-void serialLog() {
+void traceLog() {
     Log.trace("State: Current: %d - Desired: %d",
                currentDoorState, desiredDoorState);
     Log.trace("Stepper: Pos: %d - Open: %d - Closed %d - Target: %d - Speed: %d",
@@ -193,6 +205,16 @@ void serialLog() {
     Log.trace("Sensors: Indoor: %d - OutDoor: %d - Push Button: %d - Keep Open: %d - Keep Closed: %d",
                 digitalRead(indoorSensor), digitalRead(outdoorSensor), digitalRead(manualSwitch),
                 digitalRead(keepOpenSwitch), digitalRead(keepClosedSwitch));
+}
+
+void periodicLog() {
+    Log.info("Device ID: %s", (const char*)System.deviceID());
+    Log.info("OS version: %s", (const char*)System.version());
+    Log.info("Free Memory: %d", System.freeMemory());
+    Log.info("Uptime (secs): %d", System.uptime());
+    Log.info("Version: %s - Build: %s", (const char*)version, (const char*)buildDate);
+
+    Log.info("Desired State: %d - Current State: %d", desiredDoorState, currentDoorState);
 }
 
 void publishVariables() {
