@@ -6,7 +6,6 @@
  */
 
 /* 
- * TODO: Review logging: https://docs.particle.io/reference/device-os/firmware/photon/#logging
  * TODO: Review use of onboard RGB LED: https://docs.particle.io/reference/device-os/firmware/photon/#rgb
  * TODO: Review if PRODUCT_ID and PRODUCT_VERSION need to be defined: https://docs.particle.io/reference/device-os/firmware/photon/#macros
  * TODO: Review what information makes sense to publish to Cloud: https://docs.particle.io/reference/device-os/firmware/photon/#cloud-functions
@@ -50,7 +49,6 @@ int desiredDoorStateStatus = 0;
 int currentDoorStateStatus = 0;
 
 // Global Const
-const bool debug = true;
 const bool publish = true;
 
 // Stepper (MicroStepping 1/32)
@@ -79,10 +77,12 @@ enum doorStates {
 enum doorStates desiredDoorState;
 enum doorStates currentDoorState;
 
+// Create serial Logging handler
+SerialLogHandler logHandler(LOG_LEVEL_INFO);
 // Create AccelStepper
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 // Serial logging timer
-Timer serialTimer(serialLogInterval, serialLog);
+Timer serialLogTimer(serialLogInterval, serialLog);
 // Create timer to send current variable values to cloud for switch state
 Timer particleVarPublishTimer(cloudPublishInterval, publishVariables);
 // Timer for how long the door is kept open after no presense detected.
@@ -98,12 +98,8 @@ void setup() {
         // Start background timers
         particleVarPublishTimer.start();
     }
-
-    if (debug) {
-        // Start Serial Debugging
-        Serial.begin(9600);
-        serialTimer.start();
-    }
+    Log.info("System version: %s", (const char*)System.version());
+    serialLogTimer.start();
 
     // Set up the limit switches
     pinMode(homeSwitch, INPUT_PULLUP);
@@ -143,55 +139,26 @@ void setup() {
 boolean presenseDetected() {
     // True if either sensor is active (high)
     if ( (digitalRead(indoorSensor)) or (digitalRead(outdoorSensor)) or (digitalRead(manualSwitch)) ) {
-        if (debug) {
-            Serial.print("Presence Detected - Indoor: ");
-            Serial.print(digitalRead(indoorSensor));
-            Serial.print(" - Outdoor: ");
-            Serial.print(digitalRead(outdoorSensor));
-            Serial.print(" - Manual Button: ");
-            Serial.println(digitalRead(manualSwitch));
-        }
+        Log.trace("presenseDetected: Indoor: %d - Outdoor: %d - Manual: %d",
+                   digitalRead(indoorSensor), digitalRead(outdoorSensor), digitalRead(manualSwitch));
         return true;
     }
     return false;
 }
 
 void serialLog() {
-    Serial.println();
-    Serial.println("-----------------------------------------------------------------------------------------------------");
-    // Serial.print("C.State: ");
-    // Serial.print(currentDoorState);
-    // Serial.print(" - D.State: ");
-    // Serial.print(desiredDoorState);
-    Serial.print(" - C.Pos: ");
-    Serial.print(stepper.currentPosition());
-    Serial.print(" - Open Pos: ");
-    Serial.print(openPosition);
-    Serial.print(" - Closed Pos: ");
-    Serial.print(closedPosition);
-    Serial.print(" - Target Pos: ");
-    Serial.print(stepper.targetPosition());
-    Serial.print(" - Speed: ");
-    Serial.print(stepper.speed());
-    Serial.print(" - keepOpenTimer: ");
-    Serial.print(keepOpenTimer.isActive());
-    Serial.println();
-
-    Serial.print("Home: ");
-    Serial.print(digitalRead(homeSwitch));
-    Serial.print(" Closed: ");
-    Serial.print(digitalRead(closedSwitch));
-    // Serial.print(" Indoor: ");
-    // Serial.print(digitalRead(indoorSensor));
-    // Serial.print(" Outdoor: ");
-    // Serial.print(digitalRead(outdoorSensor));
-    // Serial.print(" Push Button: ");
-    // Serial.print(digitalRead(manualSwitch));
-    // Serial.print(" KeepOpen: ");
-    // Serial.print(digitalRead(keepOpenSwitch));
-    // Serial.print(" KeepClosed: ");
-    // Serial.print(digitalRead(keepClosedSwitch));
-    // Serial.println();
+    Log.trace("State: Current: %d - Desired: %d",
+               currentDoorState, desiredDoorState);
+    Log.trace("Stepper: Pos: %d - Open: %d - Closed %d - Target: %d - Speed: %d",
+               stepper.currentPosition(), openPosition, closedPosition, stepper.targetPosition(),
+               stepper.speed());
+    Log.trace("KeepOpenTimer: %d", keepOpenTimer.isActive());
+    Log.trace("Limit Switch: Home: %d - Closed %d",
+               digitalRead(homeSwitch),
+               digitalRead(closedSwitch));
+    Log.trace("Sensors: Indoor: %d - OutDoor: %d - Push Button: %d - Keep Open: %d - Keep Closed: %d",
+                digitalRead(indoorSensor), digitalRead(outdoorSensor), digitalRead(manualSwitch),
+                digitalRead(keepOpenSwitch), digitalRead(keepClosedSwitch));
 }
 
 void publishVariables() {
@@ -223,15 +190,11 @@ void presenseSensorISR() {
 void timerCallback() {
     if (presenseDetected()) {
         // Timer expired, but reset as presense detected
-        if (debug) {
-            Serial.println("timerCallback - Extending timer");
-        }
+        Log.trace("timerCallback - Extending timer");
         keepOpenTimer.changePeriod(keepOpenTime);  //Set or reset the timer
     } else {
         // Timer expied and presence not detected.
-        if (debug) {
-            Serial.println("timerCallback - Timer expired");
-        }
+        Log.trace("timerCallback - Timer expired");
         desiredDoorState = CLOSED;
     } 
 }
@@ -240,9 +203,7 @@ void openDoor() {
     if (currentDoorState != OPEN) {
         if ((openPosition - stepper.currentPosition()) == 0) {
             // We expect to be open, but we're not. Move further.
-            if (debug) {
-                Serial.println("Opening - Homing");
-            }
+            Log.warn("Opening - Homing");
             openPosition = openPosition - moveFurtherIncrement;
         }
         stepper.enableOutputs();
@@ -259,9 +220,7 @@ void closeDoor() {
     if (currentDoorState != CLOSED) {
         if ((closedPosition - stepper.currentPosition()) == 0) {
             // We expect to be closed but we're not. Move further
-            if (debug) {
-                Serial.println("Closing - Homing");
-            }
+            Log.warn("Closing - Homing");
             closedPosition = closedPosition + moveFurtherIncrement;
         }
         stepper.enableOutputs();
