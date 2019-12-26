@@ -1,8 +1,21 @@
 /*
  * Project DogDoor
  * Description: Stepper motor controlled Dog Door.
- * Author: Copyright (C) 2019 Martin Rowan
- * Date: 12 December 2019
+ * Author: Copyright (C) 2019-2020 Martin Rowan
+ * Date: <TBD>
+ */
+
+/* 
+ * TODO: Review logging: https://docs.particle.io/reference/device-os/firmware/photon/#logging
+ * TODO: Review use of onboard RGB LED: https://docs.particle.io/reference/device-os/firmware/photon/#rgb
+ * TODO: Review if PRODUCT_ID and PRODUCT_VERSION need to be defined: https://docs.particle.io/reference/device-os/firmware/photon/#macros
+ * TODO: Review what information makes sense to publish to Cloud: https://docs.particle.io/reference/device-os/firmware/photon/#cloud-functions
+ * TODO: Measure presenece sensor outputs to ensure high voltage is not > 3v3
+ * TODO: Status LEDs connected to Analog Outputs?
+ * TODO: Setup manual toggle switch
+ * TODO: Setup manual trigger switch, or use button for system.reset or RST pin
+ * TODO: Re-cable motors with sheilded wire
+ * TODO: Review disabling OTA updates whilst motor is active: https://docs.particle.io/reference/device-os/firmware/photon/#ota-updates
  */
 
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
@@ -18,8 +31,17 @@ SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - http
 #define homeSwitch D3
 #define closedSwitch D4
 // Presence Sensors
-#define indoorSensor D6
-#define outdoorSensor D7
+#define indoorSensor D5
+#define outdoorSensor D6
+// Manual push button switch
+#define manualSwitch D7
+// Keep Open and keep closed toggle switches
+#define keepOpenSwitch A0
+#define keepClosedSwitch A1
+
+// Latching Toggle Switch
+# define keepOpen A0
+# define keepClosed A1
 
 // Particle Cloud variables
 int homeSwitchStatus = 0;
@@ -28,17 +50,18 @@ int desiredDoorStateStatus = 0;
 int currentDoorStateStatus = 0;
 
 // Global Const
-const bool debug = false;
+const bool debug = true;
+const bool publish = true;
 
 // Stepper (MicroStepping 1/32)
-const int stepperSpeed = 10000;
-const int stepperAccel = 5000;
-const long initialClosedPosition = 71500;
+const int stepperSpeed = 25000;
+const int stepperAccel = 15000;
+const long initialClosedPosition = 72000;
 const int moveFurtherIncrement = 10000;
 
 // Timers
 const int keepOpenTime = 10000;  // 10 seconds
-const int cloudPublishInterval = 30000;  // 30 seconds
+const int cloudPublishInterval = 5000;  // 5 seconds
 const int serialLogInterval = 1000;  // 1 second
 
 // Global Vars
@@ -52,7 +75,6 @@ enum doorStates {
     MOVING = 2,
     CLOSED = 3,
     OBSTRUCTED = 4,
-    LOCKED = 5,
 };
 enum doorStates desiredDoorState;
 enum doorStates currentDoorState;
@@ -67,32 +89,40 @@ Timer particleVarPublishTimer(cloudPublishInterval, publishVariables);
 Timer keepOpenTimer(keepOpenTime, timerCallback, true);
 
 void setup() {
-    // Set up Particle cloud variables
-    Particle.variable("homeSwitch", homeSwitchStatus);
-    Particle.variable("closedSwitch", closedSwitchStatus);
-    Particle.variable("desiredDoorState", desiredDoorStateStatus);
-    Particle.variable("currentDoorState", currentDoorStateStatus);
+    if (publish) {
+        // Set up Particle cloud variables
+        Particle.variable("homeSwitch", homeSwitchStatus);
+        Particle.variable("closedSwitch", closedSwitchStatus);
+        Particle.variable("desiredDoorState", desiredDoorStateStatus);
+        Particle.variable("currentDoorState", currentDoorStateStatus);
+        // Start background timers
+        particleVarPublishTimer.start();
+    }
 
     if (debug) {
         // Start Serial Debugging
         Serial.begin(9600);
         serialTimer.start();
     }
-    // Start background timers
-    particleVarPublishTimer.start();
 
     // Set up the limit switches
     pinMode(homeSwitch, INPUT_PULLUP);
     pinMode(closedSwitch, INPUT_PULLUP);
     // Set up interupts to handle switch changes
-    attachInterrupt(homeSwitch, switchISR, CHANGE);
-    attachInterrupt(closedSwitch, switchISR, CHANGE);
+    attachInterrupt(homeSwitch, limitSwitchISR, CHANGE);
+    attachInterrupt(closedSwitch, limitSwitchISR, CHANGE);
 
-    // Set up the sensors
-    pinMode(indoorSensor, INPUT_PULLDOWN);
+    // Set up the trigger sensors
+    pinMode(indoorSensor, INPUT_PULLDOWN);  // PULLDOWN - High Signal must not exceed 3v3
+    pinMode(outdoorSensor, INPUT_PULLDOWN); // PULLDOWN - High Signal must not exceed 3v3
+    pinMode(manualSwitch, INPUT_PULLDOWN); // PULLDOWN - High Signal must not exceed 3v3
     attachInterrupt(indoorSensor, presenseSensorISR, RISING);
-    pinMode(outdoorSensor, INPUT_PULLDOWN);
     attachInterrupt(outdoorSensor, presenseSensorISR, RISING);
+    attachInterrupt(manualSwitch, presenseSensorISR, RISING);
+
+    // Setup the toggle switch
+    pinMode(keepOpenSwitch, INPUT_PULLDOWN);
+    pinMode(keepClosedSwitch, INPUT_PULLDOWN);
 
     // Set up stepper motor and initialise with ensuring door is closed
     stepper.setPinsInverted (/*direction*/ true, /*step*/ false, /*enable*/ true);
@@ -101,11 +131,9 @@ void setup() {
     stepper.setAcceleration(stepperAccel);
     stepper.disableOutputs();
 
-    switchISR();  // Get Initial currentDoorState by calling the switchISR
+    limitSwitchISR();  // Get Initial currentDoorState
     desiredDoorState = CLOSED;  // Set initial State
 
-    // Set stepper likely closed position
-    // closedPosition = initialClosedPosition;
     if (currentDoorState == CLOSED){
         // We're already closed at satrtup. Set open to be the inverse of the normal closed pos.
         openPosition = -initialClosedPosition;
@@ -114,12 +142,14 @@ void setup() {
 
 boolean presenseDetected() {
     // True if either sensor is active (high)
-    if ( (digitalRead(indoorSensor)) or (digitalRead(outdoorSensor)) ) {
+    if ( (digitalRead(indoorSensor)) or (digitalRead(outdoorSensor)) or (digitalRead(manualSwitch)) ) {
         if (debug) {
             Serial.print("Presence Detected - Indoor: ");
             Serial.print(digitalRead(indoorSensor));
             Serial.print(" - Outdoor: ");
-            Serial.println(digitalRead(outdoorSensor));
+            Serial.print(digitalRead(outdoorSensor));
+            Serial.print(" - Manual Button: ");
+            Serial.println(digitalRead(manualSwitch));
         }
         return true;
     }
@@ -127,10 +157,12 @@ boolean presenseDetected() {
 }
 
 void serialLog() {
-    Serial.print("C.State: ");
-    Serial.print(currentDoorState);
-    Serial.print(" - D.State: ");
-    Serial.print(desiredDoorState);
+    Serial.println();
+    Serial.println("-----------------------------------------------------------------------------------------------------");
+    // Serial.print("C.State: ");
+    // Serial.print(currentDoorState);
+    // Serial.print(" - D.State: ");
+    // Serial.print(desiredDoorState);
     Serial.print(" - C.Pos: ");
     Serial.print(stepper.currentPosition());
     Serial.print(" - Open Pos: ");
@@ -149,11 +181,17 @@ void serialLog() {
     Serial.print(digitalRead(homeSwitch));
     Serial.print(" Closed: ");
     Serial.print(digitalRead(closedSwitch));
-    Serial.print(" Indoor: ");
-    Serial.print(digitalRead(indoorSensor));
-    Serial.print(" Outdoor: ");
-    Serial.print(digitalRead(outdoorSensor));
-    Serial.println();
+    // Serial.print(" Indoor: ");
+    // Serial.print(digitalRead(indoorSensor));
+    // Serial.print(" Outdoor: ");
+    // Serial.print(digitalRead(outdoorSensor));
+    // Serial.print(" Push Button: ");
+    // Serial.print(digitalRead(manualSwitch));
+    // Serial.print(" KeepOpen: ");
+    // Serial.print(digitalRead(keepOpenSwitch));
+    // Serial.print(" KeepClosed: ");
+    // Serial.print(digitalRead(keepClosedSwitch));
+    // Serial.println();
 }
 
 void publishVariables() {
@@ -165,7 +203,7 @@ void publishVariables() {
     currentDoorStateStatus = currentDoorState;
 }
 
-void switchISR() {
+void limitSwitchISR() {
     if (digitalRead(homeSwitch)) {
         currentDoorState = OPEN;
     } else if (digitalRead(closedSwitch)) {
@@ -176,21 +214,23 @@ void switchISR() {
 }
 
 void presenseSensorISR() {
-    desiredDoorState = OPEN;
-    keepOpenTimer.changePeriodFromISR(keepOpenTime);  // Set or reset the timer
+    if (!digitalRead(keepClosedSwitch)){
+        desiredDoorState = OPEN;
+        keepOpenTimer.changePeriodFromISR(keepOpenTime);  // Set or reset the timer
+    }
 }
 
 void timerCallback() {
     if (presenseDetected()) {
         // Timer expired, but reset as presense detected
         if (debug) {
-            Serial.print("timerCallback - Extending timer");
+            Serial.println("timerCallback - Extending timer");
         }
         keepOpenTimer.changePeriod(keepOpenTime);  //Set or reset the timer
     } else {
         // Timer expied and presence not detected.
         if (debug) {
-            Serial.print("timerCallback - Timer expired");
+            Serial.println("timerCallback - Timer expired");
         }
         desiredDoorState = CLOSED;
     } 
@@ -198,8 +238,11 @@ void timerCallback() {
 
 void openDoor() {
     if (currentDoorState != OPEN) {
-        if (stepper.distanceToGo() == 0) {
+        if ((openPosition - stepper.currentPosition()) == 0) {
             // We expect to be open, but we're not. Move further.
+            if (debug) {
+                Serial.println("Opening - Homing");
+            }
             openPosition = openPosition - moveFurtherIncrement;
         }
         stepper.enableOutputs();
@@ -214,8 +257,11 @@ void closeDoor() {
         closedPosition = initialClosedPosition;
     }
     if (currentDoorState != CLOSED) {
-        if (stepper.distanceToGo() == 0) {
+        if ((closedPosition - stepper.currentPosition()) == 0) {
             // We expect to be closed but we're not. Move further
+            if (debug) {
+                Serial.println("Closing - Homing");
+            }
             closedPosition = closedPosition + moveFurtherIncrement;
         }
         stepper.enableOutputs();
@@ -225,7 +271,7 @@ void closeDoor() {
 }
 
 void loop() {
-    if (desiredDoorState == OPEN) {
+    if ( ((desiredDoorState == OPEN) or (digitalRead(keepOpenSwitch))) and (!digitalRead(keepClosedSwitch)) ) {
         if (digitalRead(homeSwitch)) {
             openPosition = 0;
             stepper.setCurrentPosition(openPosition);  // Ensure stepper knows it where it should be
@@ -235,10 +281,10 @@ void loop() {
         if (currentDoorState != OPEN) {
             keepOpenTimer.changePeriod(keepOpenTime); // Set or reset the timer
         }
-    } else if (desiredDoorState == CLOSED ) { 
+    } else if ( ((desiredDoorState == CLOSED) or (digitalRead(keepClosedSwitch))) and (!digitalRead(keepOpenSwitch)) ) { 
         // This ensures that if obstructed is detected we stop immediately, not decelerating
-        // This approach does set closedPosition to the point the obstuction was detected
-        // will re-home on next correct closing 
+        // This approach sets closedPosition to the point the obstuction was detected
+        // will re-home on next correct closing
         if ( (digitalRead(closedSwitch)) or (currentDoorState == OBSTRUCTED) ) {
             if (currentDoorState == OBSTRUCTED) {
                 desiredDoorState = OPEN;
@@ -251,11 +297,6 @@ void loop() {
             closeDoor();
         }
     } else if (desiredDoorState == DISABLED) {
-        // Do Something else?
         stepper.disableOutputs();
-    } else {
-        // Current desiredDoorState not yet handled, default to closed
-        desiredDoorState = CLOSED;
     }
-
 }
