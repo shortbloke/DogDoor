@@ -5,13 +5,13 @@
  * Date: <TBD>
  */
 
-/* 
- * TODO: Work without connection to cloud. Currently doesn't
+/*
  * TODO: Measure presence sensor outputs to ensure high voltage is not > 3v3
  * TODO: Status LEDs connected to Analog Outputs?
  */
 
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
+SYSTEM_MODE(SEMI_AUTOMATIC);
 
 // Include the AccelStepper library:
 #include <AccelStepper.h>
@@ -47,11 +47,19 @@ SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - http
 const char version[] = "1.0.0";
 const char buildDate[] = __DATE__ " " __TIME__;
 
+// Device Info
+String deviceID = "";
+String sysVer = "";
+String buildString = "";
+int resetReason = 0;
+int resetReasonData = 0;
+
 // Particle Cloud
 int homeSwitchStatus = 0;
 int closedSwitchStatus = 0;
 int desiredDoorStateStatus = 0;
 int currentDoorStateStatus = 0;
+bool initialVarPublishComplete = false;
 const bool publish = true;
 
 // Stepper (MicroStepping 1/32)
@@ -64,8 +72,7 @@ const int moveFurtherIncrement = 10000;
 const int keepOpenTime = 10000;  // 10 seconds
 const int cloudPublishInterval = 30000;  // 30 seconds
 const int traceLogInterval = 5000;  // 5 second
-// const int periodicLogInterval = 300000;  // 5 minutes
-const int periodicLogInterval = 30000;  //  30 seconds
+const int periodicLogInterval = 60000;  //  1 minute
 
 // Limit end stop positions
 int openPosition = 0;
@@ -102,20 +109,12 @@ Timer keepOpenTimer(keepOpenTime, timerCallback, true);
  * Setup
  *********************************************************************************************************************/
 void setup() {
-    // Start background timers
-    if (publish) {
-        // Set up Particle cloud variables
-        Particle.variable("homeSwitch", homeSwitchStatus);
-        Particle.variable("closedSwitch", closedSwitchStatus);
-        Particle.variable("desiredDoorState", desiredDoorStateStatus);
-        Particle.variable("currentDoorState", currentDoorStateStatus);
-        // Start background timers
-        particleVarPublishTimer.start();
-    }
-    traceLogTimer.start();
-    periodicLogTimer.start();
-    // Call initial periodicLog
-    periodicLog();
+    // Setup Device information, doesn't change post boot
+    deviceID = System.deviceID();
+    sysVer = System.version();
+    buildString = String::format("Version: %s - Build: %s", version, buildDate);
+    resetReason = System.resetReason();
+    resetReasonData = System.resetReasonData();
 
     // Set up the limit switches
     pinMode(homeSwitch, INPUT_PULLUP);
@@ -143,15 +142,20 @@ void setup() {
     stepper.setAcceleration(stepperAccel);
     stepper.disableOutputs();
 
-    limitSwitchISR();  // Get Initial currentDoorState
-    desiredDoorState = CLOSED;  // Set initial State
+    // Start background timers
+    traceLogTimer.start();
+    periodicLogTimer.start();
 
+    // Initial states
+    limitSwitchISR();
+    desiredDoorState = CLOSED;
     if (currentDoorState == CLOSED){
         // We're already closed at satrtup. Set open to be the inverse of the normal closed pos.
         openPosition = -initialClosedPosition;
     }
-    byte mac[6];
-    WiFi.macAddress(mac);
+
+    // First time call to periodicLog
+    periodicLog();
 }
 
 
@@ -213,13 +217,12 @@ void traceLog() {
 }
 
 void periodicLog() {
-    Log.info("Device ID: %s", (const char*)System.deviceID());
-    Log.info("OS version: %s", (const char*)System.version());
+    Log.info("Device ID: %s", (const char*)deviceID);
+    Log.info("OS version: %s", (const char*)sysVer);
     Log.info("Free Memory: %d", System.freeMemory());
     Log.info("Uptime (secs): %d", System.uptime());
-    Log.info("System restart reason: %d - Data: %d", System.resetReason(), System.resetReasonData());
-    Log.info("Version: %s - Build: %s", (const char*)version, (const char*)buildDate);
-
+    Log.info("System restart reason: %d - Data: %d", resetReason, resetReasonData);
+    Log.info("App Version: %s", (const char*)buildString);
     Log.info("Desired State: %d - Current State: %d", desiredDoorState, currentDoorState);
 }
 
@@ -279,6 +282,20 @@ void closeDoor() {
  * Main Loop
  *********************************************************************************************************************/
 void loop() {
+    if ( (Particle.connected() == false) and (publish) ) {
+        Particle.connect();
+    } else if ( (initialVarPublishComplete == false) and (publish) ) {
+        Log.info("Connected publishing variables");
+        // Set up Particle cloud variables
+        Particle.variable("homeSwitch", homeSwitchStatus);
+        Particle.variable("closedSwitch", closedSwitchStatus);
+        Particle.variable("desiredDoorState", desiredDoorStateStatus);
+        Particle.variable("currentDoorState", currentDoorStateStatus);
+        // Start background timers
+        particleVarPublishTimer.start(); 
+        initialVarPublishComplete = true;
+    }
+
     if ( ((desiredDoorState == OPEN) or (digitalRead(keepOpenSwitch))) and (!digitalRead(keepClosedSwitch)) ) {
         if (digitalRead(homeSwitch)) {
             openPosition = 0;
