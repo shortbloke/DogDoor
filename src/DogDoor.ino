@@ -6,8 +6,10 @@
  */
 
 /*
- * TODO: Measure presence sensor outputs to ensure high voltage is not > 3v3
  * TODO: Status LEDs connected to Analog Outputs?
+ * TODO: Adjust Toggle and push button switch to INPUT_PULLUP, and adjust wiring to bring value to ground.
+ *       more resistant to electrical noise. Will invert calls to get their state too.
+ * TODO: Make pressing button whilst closing act immediately, without deceleration. Maybe treat like obstruction?
  */
 
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
@@ -25,23 +27,20 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 #define stepPin D2
 #define motorInterfaceType 1
 // Limit switches
-#define homeSwitch D3
-#define closedSwitch D4
-// Presence Sensors
-#define indoorSensor D5
-#define outdoorSensor D6
-// Manual push button switch
-#define manualSwitch D7
+#define homeSwitchPin D3
+#define closedSwitchPin D4
 // Keep Open and keep closed toggle switches
-#define keepOpenSwitch A0
-#define keepClosedSwitch A1
+#define keepClosedSwitchPin D5
+#define keepOpenSwitchPin D6
+// Manual push button switch
+#define manualSwitchPin D7
 
-// Latching Toggle Switch
-# define keepOpen A0
-# define keepClosed A1
+// Presence Sensors
+#define indoorIRSensorPin A0
+#define outdoorIRSensorPin A1
 
 /**********************************************************************************************************************
- * Globals
+ * Global
  *********************************************************************************************************************/
 // Build
 const char version[] = "1.0.0";
@@ -57,8 +56,12 @@ int resetReasonData = 0;
 // Particle Cloud
 int homeSwitchStatus = 0;
 int closedSwitchStatus = 0;
+int keepClosedSwitchStatus = 0;
+int keepOpenSwitchStatus = 0;
 int desiredDoorStateStatus = 0;
 int currentDoorStateStatus = 0;
+int indoorDistanceStatus = 0;
+int outdoorDistanceStatus = 0;
 bool initialVarPublishComplete = false;
 const bool publish = true;
 
@@ -68,14 +71,23 @@ const int stepperAccel = 15000;
 const long initialClosedPosition = 72000;
 const int moveFurtherIncrement = 10000;
 
+// IR Sensors
+long indoorIRSensor = 0;
+long outdoorIRSensor = 0;
+const long indoorIRSensorTriggerThreshold = 700;
+const long outdoorIRSensorTriggerThreshold = 700;
+
 // Timers
 const int keepOpenTime = 10000;  // 10 seconds
-const int cloudPublishInterval = 30000;  // 30 seconds
+// const int cloudPublishInterval = 30000;  // 30 seconds
+const int cloudPublishInterval = 5000;  // 5 seconds
 const int traceLogInterval = 5000;  // 5 second
 const int periodicLogInterval = 60000;  //  1 minute
+const int irSensorPollInterval = 250;  // 1/4 of a second
+// const int irSensorPollInterval = 1000;  // 1 of a second
 
 // Limit end stop positions
-int openPosition = 0;
+long openPosition = 0;
 long closedPosition = initialClosedPosition;
 
 // Enum for states
@@ -93,12 +105,15 @@ enum doorStates currentDoorState;
  * Global Objects
  *********************************************************************************************************************/
 // Create serial Logging handler, set log level
-SerialLogHandler logHandler(LOG_LEVEL_INFO);
+SerialLogHandler logHandler(LOG_LEVEL_TRACE);
+// SerialLogHandler logHandler(LOG_LEVEL_INFO);
 // Create AccelStepper
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
+// Poll IR sensors
+Timer pollIRSensorsTimer(irSensorPollInterval, pollIRSensorISR);
 // Trace logging timer
 Timer traceLogTimer(traceLogInterval, traceLog);
-// Peridoc Log message timer
+// Periodic Log message timer
 Timer periodicLogTimer(periodicLogInterval, periodicLog);
 // Create timer to send current variable values to cloud for switch state
 Timer particleVarPublishTimer(cloudPublishInterval, publishVariables);
@@ -117,23 +132,20 @@ void setup() {
     resetReasonData = System.resetReasonData();
 
     // Set up the limit switches
-    pinMode(homeSwitch, INPUT_PULLUP);
-    pinMode(closedSwitch, INPUT_PULLUP);
-    // Set up interupts to handle switch changes
-    attachInterrupt(homeSwitch, limitSwitchISR, CHANGE);
-    attachInterrupt(closedSwitch, limitSwitchISR, CHANGE);
+    pinMode(homeSwitchPin, INPUT_PULLUP);
+    pinMode(closedSwitchPin, INPUT_PULLUP);
+    // Set up interrupts to handle switch changes
+    attachInterrupt(homeSwitchPin, limitSwitchISR, CHANGE);
+    attachInterrupt(closedSwitchPin, limitSwitchISR, CHANGE);
 
-    // Set up the trigger sensors
-    pinMode(indoorSensor, INPUT_PULLDOWN);  // PULLDOWN - High Signal must not exceed 3v3
-    pinMode(outdoorSensor, INPUT_PULLDOWN); // PULLDOWN - High Signal must not exceed 3v3
-    pinMode(manualSwitch, INPUT_PULLDOWN); // PULLDOWN - High Signal must not exceed 3v3
-    attachInterrupt(indoorSensor, presenceSensorISR, RISING);
-    attachInterrupt(outdoorSensor, presenceSensorISR, RISING);
-    attachInterrupt(manualSwitch, presenceSensorISR, RISING);
+    // Setup the control switches
+    pinMode(manualSwitchPin, INPUT_PULLDOWN);
+    attachInterrupt(manualSwitchPin, switchISR, RISING);
 
-    // Setup the toggle switch
-    pinMode(keepOpenSwitch, INPUT_PULLDOWN);
-    pinMode(keepClosedSwitch, INPUT_PULLDOWN);
+    pinMode(keepOpenSwitchPin, INPUT_PULLDOWN);
+    pinMode(keepClosedSwitchPin, INPUT_PULLDOWN);
+    attachInterrupt(keepOpenSwitchPin, switchISR, CHANGE);
+    attachInterrupt(keepClosedSwitchPin, switchISR, CHANGE);
 
     // Set up stepper motor and initialise with ensuring door is closed
     stepper.setPinsInverted (/*direction*/ true, /*step*/ false, /*enable*/ true);
@@ -145,17 +157,15 @@ void setup() {
     // Start background timers
     traceLogTimer.start();
     periodicLogTimer.start();
+    pollIRSensorsTimer.start();
 
     // Initial states
     limitSwitchISR();
     desiredDoorState = CLOSED;
     if (currentDoorState == CLOSED){
-        // We're already closed at satrtup. Set open to be the inverse of the normal closed pos.
+        // We're already closed at startup. Set open to be the inverse of the normal closed pos.
         openPosition = -initialClosedPosition;
     }
-
-    // First time call to periodicLog
-    periodicLog();
 }
 
 
@@ -163,40 +173,38 @@ void setup() {
  * Interrupt Service Routines
  *********************************************************************************************************************/
 void limitSwitchISR() {
-    if (digitalRead(homeSwitch)) {
+    if (digitalRead(homeSwitchPin)) {
         currentDoorState = OPEN;
-    } else if (digitalRead(closedSwitch)) {
+    } else if (digitalRead(closedSwitchPin)) {
         currentDoorState = CLOSED;
     } else {
         currentDoorState = MOVING;
     }
 }
 
-void presenceSensorISR() {
-    if (!digitalRead(keepClosedSwitch)){
+void switchISR() {
+    if ( (digitalRead(keepOpenSwitchPin)) or (digitalRead(manualSwitchPin)) ){
         desiredDoorState = OPEN;
-        keepOpenTimer.changePeriodFromISR(keepOpenTime);  // Set or reset the timer
+    } else if (digitalRead(keepClosedSwitchPin)) {
+        desiredDoorState = CLOSED;
     }
 }
 
+void pollIRSensorISR() {
+    indoorIRSensor = analogRead(indoorIRSensorPin);
+    // outdoorIRSensor = analogRead(outdoorIRSensorPin);
+}
 
 /**********************************************************************************************************************
  * Functions
  *********************************************************************************************************************/
 boolean presenceDetected() {
-    // True if either sensor is active (high)
-    if ( (digitalRead(indoorSensor)) or (digitalRead(outdoorSensor)) or (digitalRead(manualSwitch)) ) {
-        Log.trace("presenceDetected: Indoor: %d - Outdoor: %d - Manual: %d",
-                   digitalRead(indoorSensor), digitalRead(outdoorSensor), digitalRead(manualSwitch));
-        if (publish) {
-            if (Particle.connected()) {
-                Particle.publish("Presence Detected: ",
-                                  String::format("Indoor: %d - Outdoor: %d - Manual: %d",
-                                  digitalRead(indoorSensor), digitalRead(outdoorSensor), digitalRead(manualSwitch)),
-                                  PRIVATE);
-            }
+    if (!digitalRead(keepClosedSwitchPin)){
+        if ( (indoorIRSensor >= indoorIRSensorTriggerThreshold) or (outdoorIRSensor >= outdoorIRSensorTriggerThreshold) ) {
+            keepOpenTimer.changePeriod(keepOpenTime);  // Set or reset the timer
+            Log.trace("Presence Detected!");
+            return true;
         }
-        return true;
     }
     return false;
 }
@@ -209,11 +217,11 @@ void traceLog() {
                stepper.speed());
     Log.trace("KeepOpenTimer: %d", keepOpenTimer.isActive());
     Log.trace("Limit Switch: Home: %d - Closed %d",
-               digitalRead(homeSwitch),
-               digitalRead(closedSwitch));
+               digitalRead(homeSwitchPin),
+               digitalRead(closedSwitchPin));
     Log.trace("Sensors: Indoor: %d - OutDoor: %d - Push Button: %d - Keep Open: %d - Keep Closed: %d",
-                digitalRead(indoorSensor), digitalRead(outdoorSensor), digitalRead(manualSwitch),
-                digitalRead(keepOpenSwitch), digitalRead(keepClosedSwitch));
+                indoorIRSensor, outdoorIRSensor, digitalRead(manualSwitchPin),
+                digitalRead(keepOpenSwitchPin), digitalRead(keepClosedSwitchPin));
 }
 
 void periodicLog() {
@@ -226,25 +234,10 @@ void periodicLog() {
     Log.info("Desired State: %d - Current State: %d", desiredDoorState, currentDoorState);
 }
 
-void publishVariables() {
-    // Update Particle Cloud variables
-    homeSwitchStatus = digitalRead(homeSwitch);
-    closedSwitchStatus = digitalRead(closedSwitch);
-
-    desiredDoorStateStatus = desiredDoorState;
-    currentDoorStateStatus = currentDoorState;
-}
-
 void timerCallback() {
-    if (presenceDetected()) {
-        // Timer expired, but reset as presence detected
-        Log.trace("timerCallback - Extending timer");
-        keepOpenTimer.changePeriod(keepOpenTime);  //Set or reset the timer
-    } else {
-        // Timer expied and presence not detected.
-        Log.trace("timerCallback - Timer expired");
-        desiredDoorState = CLOSED;
-    } 
+    // Timer expired and presence not detected.
+    Log.trace("timerCallback - Timer expired");
+    desiredDoorState = CLOSED;
 }
 
 void openDoor() {
@@ -279,25 +272,52 @@ void closeDoor() {
 
 
 /**********************************************************************************************************************
+ * Particle Cloud Setup and Publishing for data
+ *********************************************************************************************************************/
+void setupParticleCloud() {
+    if (!Particle.connected()) {
+        Particle.connect();
+    } else if (!initialVarPublishComplete) {
+        Log.info("Connected publishing variables");
+        // Set up Particle cloud variables
+        Particle.variable("HomeSwitch", homeSwitchStatus);
+        Particle.variable("ClosedSwitch", closedSwitchStatus);
+        Particle.variable("KeepClosedSwitch", keepOpenSwitchStatus);
+        Particle.variable("KeepOpenSwitch", keepClosedSwitchStatus);
+        Particle.variable("IndoorDistance", indoorDistanceStatus);
+        Particle.variable("OutdoorDistance", outdoorDistanceStatus);
+        Particle.variable("DesiredDoorState", desiredDoorStateStatus);
+        Particle.variable("CurrentDoorState", currentDoorStateStatus);
+        // Start background timers
+        particleVarPublishTimer.start(); 
+        // First time call to periodicLog
+        periodicLog();
+        initialVarPublishComplete = true;
+    }
+}
+
+void publishVariables() {
+    // Update Particle Cloud variables - Called by timer
+    homeSwitchStatus = digitalRead(homeSwitchPin);
+    closedSwitchStatus = digitalRead(closedSwitchPin);
+    keepClosedSwitchStatus = digitalRead(keepClosedSwitchPin);
+    keepOpenSwitchStatus = digitalRead(keepOpenSwitchPin);
+    indoorDistanceStatus = indoorIRSensor;
+    outdoorDistanceStatus = outdoorIRSensor;
+    desiredDoorStateStatus = desiredDoorState;
+    currentDoorStateStatus = currentDoorState;
+}
+
+/**********************************************************************************************************************
  * Main Loop
  *********************************************************************************************************************/
 void loop() {
-    if ( (Particle.connected() == false) and (publish) ) {
-        Particle.connect();
-    } else if ( (initialVarPublishComplete == false) and (publish) ) {
-        Log.info("Connected publishing variables");
-        // Set up Particle cloud variables
-        Particle.variable("homeSwitch", homeSwitchStatus);
-        Particle.variable("closedSwitch", closedSwitchStatus);
-        Particle.variable("desiredDoorState", desiredDoorStateStatus);
-        Particle.variable("currentDoorState", currentDoorStateStatus);
-        // Start background timers
-        particleVarPublishTimer.start(); 
-        initialVarPublishComplete = true;
+    if (publish) {
+        setupParticleCloud();
     }
 
-    if ( ((desiredDoorState == OPEN) or (digitalRead(keepOpenSwitch))) and (!digitalRead(keepClosedSwitch)) ) {
-        if (digitalRead(homeSwitch)) {
+    if ( ((desiredDoorState == OPEN) or (digitalRead(keepOpenSwitchPin))) or presenceDetected() and (!digitalRead(keepClosedSwitchPin)) ) {
+        if (digitalRead(homeSwitchPin)) {
             openPosition = 0;
             stepper.setCurrentPosition(openPosition);  // Ensure stepper knows it where it should be
         } else {
@@ -306,11 +326,11 @@ void loop() {
         if (currentDoorState != OPEN) {
             keepOpenTimer.changePeriod(keepOpenTime); // Set or reset the timer
         }
-    } else if ( ((desiredDoorState == CLOSED) or (digitalRead(keepClosedSwitch))) and (!digitalRead(keepOpenSwitch)) ) { 
+    } else if ( ((desiredDoorState == CLOSED) or (digitalRead(keepClosedSwitchPin))) and (!digitalRead(keepOpenSwitchPin)) ) { 
         // This ensures that if obstructed is detected we stop immediately, not decelerating
-        // This approach sets closedPosition to the point the obstuction was detected
+        // This approach sets closedPosition to the point the obstruction was detected
         // will re-home on next correct closing
-        if ( (digitalRead(closedSwitch)) or (currentDoorState == OBSTRUCTED) ) {
+        if ( (digitalRead(closedSwitchPin)) or (currentDoorState == OBSTRUCTED) ) {
             if (currentDoorState == OBSTRUCTED) {
                 desiredDoorState = OPEN;
                 currentDoorState = MOVING;
