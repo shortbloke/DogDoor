@@ -102,8 +102,8 @@ enum doorStates currentDoorState;
  * Global Objects
  *********************************************************************************************************************/
 // Create serial Logging handler, set log level
-SerialLogHandler logHandler(LOG_LEVEL_TRACE);
-// SerialLogHandler logHandler(LOG_LEVEL_INFO);
+// SerialLogHandler logHandler(LOG_LEVEL_TRACE);
+SerialLogHandler logHandler(LOG_LEVEL_INFO);
 // Create AccelStepper
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 // Poll IR sensors
