@@ -7,8 +7,6 @@
 
 /*
  * TODO: Status LEDs connected to Analog Outputs?
- * TODO: Adjust Toggle and push button switch to INPUT_PULLUP, and adjust wiring to bring value to ground.
- *       more resistant to electrical noise. Will invert calls to get their state too.
  * TODO: Make pressing button whilst closing act immediately, without deceleration. Maybe treat like obstruction?
  */
 
@@ -59,6 +57,7 @@ int closedSwitchStatus = 0;
 int keepClosedSwitchStatus = 0;
 int keepOpenSwitchStatus = 0;
 int desiredDoorStateStatus = 0;
+int lastDesiredDoorStatus = 0;
 int currentDoorStateStatus = 0;
 int indoorDistanceStatus = 0;
 int outdoorDistanceStatus = 0;
@@ -79,12 +78,10 @@ const long outdoorIRSensorTriggerThreshold = 700;
 
 // Timers
 const int keepOpenTime = 10000;  // 10 seconds
-// const int cloudPublishInterval = 30000;  // 30 seconds
-const int cloudPublishInterval = 5000;  // 5 seconds
+const int cloudPublishInterval = 30000;  // 30 seconds
 const int traceLogInterval = 5000;  // 5 second
 const int periodicLogInterval = 60000;  //  1 minute
 const int irSensorPollInterval = 250;  // 1/4 of a second
-// const int irSensorPollInterval = 1000;  // 1 of a second
 
 // Limit end stop positions
 long openPosition = 0;
@@ -139,11 +136,11 @@ void setup() {
     attachInterrupt(closedSwitchPin, limitSwitchISR, CHANGE);
 
     // Setup the control switches
-    pinMode(manualSwitchPin, INPUT_PULLDOWN);
-    attachInterrupt(manualSwitchPin, switchISR, RISING);
+    pinMode(manualSwitchPin, INPUT_PULLUP);
+    attachInterrupt(manualSwitchPin, switchISR, FALLING);
 
-    pinMode(keepOpenSwitchPin, INPUT_PULLDOWN);
-    pinMode(keepClosedSwitchPin, INPUT_PULLDOWN);
+    pinMode(keepOpenSwitchPin, INPUT_PULLUP);
+    pinMode(keepClosedSwitchPin, INPUT_PULLUP);
     attachInterrupt(keepOpenSwitchPin, switchISR, CHANGE);
     attachInterrupt(keepClosedSwitchPin, switchISR, CHANGE);
 
@@ -183,9 +180,9 @@ void limitSwitchISR() {
 }
 
 void switchISR() {
-    if ( (digitalRead(keepOpenSwitchPin)) or (digitalRead(manualSwitchPin)) ){
+    if ( (!digitalRead(keepOpenSwitchPin)) or (!digitalRead(manualSwitchPin)) ){
         desiredDoorState = OPEN;
-    } else if (digitalRead(keepClosedSwitchPin)) {
+    } else if (!digitalRead(keepClosedSwitchPin)) {
         desiredDoorState = CLOSED;
     }
 }
@@ -199,12 +196,11 @@ void pollIRSensorISR() {
  * Functions
  *********************************************************************************************************************/
 boolean presenceDetected() {
-    if (!digitalRead(keepClosedSwitchPin)){
-        if ( (indoorIRSensor >= indoorIRSensorTriggerThreshold) or (outdoorIRSensor >= outdoorIRSensorTriggerThreshold) ) {
-            keepOpenTimer.changePeriod(keepOpenTime);  // Set or reset the timer
-            Log.trace("Presence Detected!");
-            return true;
-        }
+    if ( (indoorIRSensor >= indoorIRSensorTriggerThreshold) or (outdoorIRSensor >= outdoorIRSensorTriggerThreshold) ) {
+        keepOpenTimer.changePeriod(keepOpenTime);  // Set or reset the timer
+        desiredDoorState = OPEN;
+        Log.trace("Presence Detected!");
+        return true;
     }
     return false;
 }
@@ -316,7 +312,7 @@ void loop() {
         setupParticleCloud();
     }
 
-    if ( ((desiredDoorState == OPEN) or (digitalRead(keepOpenSwitchPin))) or presenceDetected() and (!digitalRead(keepClosedSwitchPin)) ) {
+    if ( ((desiredDoorState == OPEN) or (!digitalRead(keepOpenSwitchPin)) or presenceDetected()) and (digitalRead(keepClosedSwitchPin)) ) {
         if (digitalRead(homeSwitchPin)) {
             openPosition = 0;
             stepper.setCurrentPosition(openPosition);  // Ensure stepper knows it where it should be
@@ -326,7 +322,7 @@ void loop() {
         if (currentDoorState != OPEN) {
             keepOpenTimer.changePeriod(keepOpenTime); // Set or reset the timer
         }
-    } else if ( ((desiredDoorState == CLOSED) or (digitalRead(keepClosedSwitchPin))) and (!digitalRead(keepOpenSwitchPin)) ) { 
+    } else if ( ((desiredDoorState == CLOSED) or (!digitalRead(keepClosedSwitchPin))) and (digitalRead(keepOpenSwitchPin)) ) { 
         // This ensures that if obstructed is detected we stop immediately, not decelerating
         // This approach sets closedPosition to the point the obstruction was detected
         // will re-home on next correct closing
