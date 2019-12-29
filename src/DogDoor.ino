@@ -205,7 +205,7 @@ boolean presenceDetected() {
         keepOpenTimer.changePeriod(keepOpenTime);  // Set or reset the timer
         if (desiredDoorState == CLOSED) {
             currentDoorState = OBSTRUCTED;  // Force a quicker change of direction for opening
-        } else {
+        } else if (currentDoorState != OBSTRUCTED) {
             desiredDoorState = OPEN;
         }
         Log.trace("Presence Detected!");
