@@ -7,7 +7,7 @@
 
 /*
  * TODO: Status LEDs connected to Analog Outputs?
- * TODO: Make pressing button whilst closing act immediately, without deceleration. Maybe treat like obstruction?
+ * TODO: Add/Enable outdoorIRSensor 
  */
 
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
@@ -181,7 +181,12 @@ void limitSwitchISR() {
 
 void switchISR() {
     if ( (!digitalRead(keepOpenSwitchPin)) or (!digitalRead(manualSwitchPin)) ){
-        desiredDoorState = OPEN;
+        if (desiredDoorState == CLOSED) {
+            currentDoorState = OBSTRUCTED;  // Force a quicker change of direction for opening
+        } else {
+            desiredDoorState = OPEN;
+        }
+
     } else if (!digitalRead(keepClosedSwitchPin)) {
         desiredDoorState = CLOSED;
     }
