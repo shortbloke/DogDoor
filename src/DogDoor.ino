@@ -203,7 +203,11 @@ void pollIRSensorISR() {
 boolean presenceDetected() {
     if ( (indoorIRSensor >= indoorIRSensorTriggerThreshold) or (outdoorIRSensor >= outdoorIRSensorTriggerThreshold) ) {
         keepOpenTimer.changePeriod(keepOpenTime);  // Set or reset the timer
-        desiredDoorState = OPEN;
+        if (desiredDoorState == CLOSED) {
+            currentDoorState = OBSTRUCTED;  // Force a quicker change of direction for opening
+        } else {
+            desiredDoorState = OPEN;
+        }
         Log.trace("Presence Detected!");
         return true;
     }
