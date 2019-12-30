@@ -6,8 +6,7 @@
  */
 
 /*
- * TODO: Status LEDs connected to Analog Outputs?
- * TODO: Add/Enable outdoorIRSensor 
+ * TODO: Reduced number of duplicated calls, store values in variables. e.g. pin states, mapped to a more understandable format?
  */
 
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
@@ -36,6 +35,11 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 // Presence Sensors
 #define indoorIRSensorPin A0
 #define outdoorIRSensorPin A1
+// LEDs
+#define biLedKeepClosed A2
+#define biLedKeepOpen A3
+#define biLedIndoor A4
+#define biLedOutdoor A5
 
 /**********************************************************************************************************************
  * Global
@@ -74,11 +78,11 @@ const int moveFurtherIncrement = 10000;
 long indoorIRSensor = 0;
 long outdoorIRSensor = 0;
 const long indoorIRSensorTriggerThreshold = 700;
-const long outdoorIRSensorTriggerThreshold = 700;
+const long outdoorIRSensorTriggerThreshold = 1000;
 
 // Timers
 const int keepOpenTime = 10000;  // 10 seconds
-const int cloudPublishInterval = 30000;  // 30 seconds
+const int cloudPublishInterval = 10000;  // 10 seconds
 const int traceLogInterval = 5000;  // 5 second
 const int periodicLogInterval = 60000;  //  1 minute
 const int irSensorPollInterval = 250;  // 1/4 of a second
@@ -97,6 +101,15 @@ enum doorStates {
 };
 enum doorStates desiredDoorState;
 enum doorStates currentDoorState;
+
+// Enum for LED status
+enum ledStatus {
+    OFF = 0,
+    KEEPCLOSED = 1,
+    KEEPOPEN = 2,
+    INDOOR = 3,
+    OUTDOOR = 4,
+};
 
 /**********************************************************************************************************************
  * Global Objects
@@ -128,10 +141,16 @@ void setup() {
     resetReason = System.resetReason();
     resetReasonData = System.resetReasonData();
 
-    // Set up the limit switches
+    // Setup the LEDs
+    pinMode(biLedKeepClosed, OUTPUT);
+    pinMode(biLedKeepOpen, OUTPUT);
+    pinMode(biLedIndoor, OUTPUT);
+    pinMode(biLedOutdoor, OUTPUT);
+
+    // Setup the limit switches
     pinMode(homeSwitchPin, INPUT_PULLUP);
     pinMode(closedSwitchPin, INPUT_PULLUP);
-    // Set up interrupts to handle switch changes
+    // Setup interrupts to handle switch changes
     attachInterrupt(homeSwitchPin, limitSwitchISR, CHANGE);
     attachInterrupt(closedSwitchPin, limitSwitchISR, CHANGE);
 
@@ -144,7 +163,7 @@ void setup() {
     attachInterrupt(keepOpenSwitchPin, switchISR, CHANGE);
     attachInterrupt(keepClosedSwitchPin, switchISR, CHANGE);
 
-    // Set up stepper motor and initialise with ensuring door is closed
+    // Setup stepper motor and initialise with ensuring door is closed
     stepper.setPinsInverted (/*direction*/ true, /*step*/ false, /*enable*/ true);
     stepper.setEnablePin(enPin);
     stepper.setMaxSpeed(stepperSpeed);
@@ -165,6 +184,41 @@ void setup() {
     }
 }
 
+void statusLed1(ledStatus status) {
+    switch(status) {
+        case OFF:
+            digitalWrite(biLedKeepClosed, LOW);
+            digitalWrite(biLedKeepOpen, LOW);
+            break;
+        case KEEPCLOSED:
+            digitalWrite(biLedKeepClosed, LOW);
+            digitalWrite(biLedKeepOpen, LOW);
+            break;
+        case KEEPOPEN:
+            digitalWrite(biLedKeepClosed, LOW);
+            digitalWrite(biLedKeepOpen, HIGH);
+            break;
+
+    }
+}
+
+void statusLed2(ledStatus status) {
+    switch(status) {
+        case OFF:
+            digitalWrite(biLedIndoor, LOW);
+            digitalWrite(biLedOutdoor, LOW);
+            break;
+        case INDOOR:
+            digitalWrite(biLedIndoor, HIGH);
+            digitalWrite(biLedOutdoor, LOW);
+            break;
+        case OUTDOOR:
+            digitalWrite(biLedIndoor, LOW);
+            digitalWrite(biLedOutdoor, HIGH);
+            break;
+
+    }
+}
 
 /**********************************************************************************************************************
  * Interrupt Service Routines
@@ -180,21 +234,31 @@ void limitSwitchISR() {
 }
 
 void switchISR() {
-    if ( (!digitalRead(keepOpenSwitchPin)) or (!digitalRead(manualSwitchPin)) ){
+    if (!digitalRead(keepOpenSwitchPin) ) {
         if (desiredDoorState == CLOSED) {
             currentDoorState = OBSTRUCTED;  // Force a quicker change of direction for opening
         } else {
             desiredDoorState = OPEN;
         }
-
+        statusLed1(KEEPOPEN);
     } else if (!digitalRead(keepClosedSwitchPin)) {
         desiredDoorState = CLOSED;
+        statusLed1(KEEPCLOSED);
+    } else if (!digitalRead(manualSwitchPin)) {
+        if (desiredDoorState == CLOSED) {
+            currentDoorState = OBSTRUCTED;  // Force a quicker change of direction for opening
+        } else {
+            desiredDoorState = OPEN;
+        }
+        statusLed1(OFF);
+    } else {
+        statusLed1(OFF);
     }
 }
 
 void pollIRSensorISR() {
     indoorIRSensor = analogRead(indoorIRSensorPin);
-    // outdoorIRSensor = analogRead(outdoorIRSensorPin);
+    outdoorIRSensor = analogRead(outdoorIRSensorPin);
 }
 
 /**********************************************************************************************************************
@@ -208,11 +272,17 @@ boolean presenceDetected() {
         } else if (currentDoorState != OBSTRUCTED) {
             desiredDoorState = OPEN;
         }
-        Log.trace("Presence Detected!");
+        if (indoorIRSensor >= indoorIRSensorTriggerThreshold) {
+            statusLed2(INDOOR);
+        } else {
+            statusLed2(OUTDOOR);
+        }
         return true;
     }
     return false;
 }
+
+
 
 void traceLog() {
     Log.trace("State: Current: %d - Desired: %d",
@@ -237,12 +307,16 @@ void periodicLog() {
     Log.info("System restart reason: %d - Data: %d", resetReason, resetReasonData);
     Log.info("App Version: %s", (const char*)buildString);
     Log.info("Desired State: %d - Current State: %d", desiredDoorState, currentDoorState);
+    Log.info("Sensors: Indoor: %d - OutDoor: %d - Push Button: %d - Keep Open: %d - Keep Closed: %d",
+             indoorIRSensor, outdoorIRSensor, digitalRead(manualSwitchPin),
+             digitalRead(keepOpenSwitchPin), digitalRead(keepClosedSwitchPin));
 }
 
 void timerCallback() {
     // Timer expired and presence not detected.
     Log.trace("timerCallback - Timer expired");
     desiredDoorState = CLOSED;
+    statusLed2(OFF);
 }
 
 void openDoor() {
