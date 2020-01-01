@@ -3,7 +3,7 @@
  * Description: Stepper motor controlled Pet/Dog door.
  *              Uses:
  *                - Particle Photon microcontroller
- *                - Sharp GP2Y0A21 infrared proximity/distance detectors for internal and external activation.
+ *                - Sharp GP2Y0A21 infrared proximity/distance sensors for presence detection.
  *                - Home and End limit microswitches
  *                - 2 x NEMA17 Stepper motors via TB6600 Stepper controller, set to 1/32 micro-stepping
  *                - AccelStepper library provides acceleration function to stepper controller
@@ -87,7 +87,7 @@ const long initialClosedPosition = 72000;
 // IR Sensors
 long indoorSensorValue = 0;
 long outdoorSensorValue = 0;
-const long indoorIRSensorTriggerThreshold = 700;
+const long indoorIRSensorTriggerThreshold = 500;
 const long outdoorIRSensorTriggerThreshold = 1000;
 const int irSensorPollInterval = 100;
 bool indoorDetected = false;
