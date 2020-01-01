@@ -8,7 +8,6 @@ With the Particle Photons built in WiFi, I plan to integrate in the monitoring o
 
 ## Potential TODO List
 
-* Determine if larger drive gear can increase speed of door operation.
 * Experiment with ISO11784 134.2K RFID Module to read RFID tags in our pets. As an alternative to using the infrared sensor outside.
 * Investigate locking mechanisms, solenoid?
 
