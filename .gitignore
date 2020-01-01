@@ -30,3 +30,16 @@
 *.exe
 *.out
 *.app
+
+# Firmware files
+*.bin
+
+# VScode settings
+.vscode/*
+
+# Exclude build/temp directories
+target/*
+lib/*
+*.cpp
+
+
