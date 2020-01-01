@@ -5,7 +5,7 @@
  *                - Particle Photon microcontroller
  *                - Sharp GP2Y0A21 infrared proximity/distance detectors for internal and external activation.
  *                - Home and End limit microswitches
- *                - 2 x NEMA17 Stepper motors via TB6600 Stepper controller
+ *                - 2 x NEMA17 Stepper motors via TB6600 Stepper controller, set to 1/32 micro-stepping
  *                - AccelStepper library provides acceleration function to stepper controller
  *                - State information accessible via Particle.io cloud
  *                - Override control and system commands via Particle.io cloud
@@ -80,8 +80,8 @@ bool initialPublishComplete = false;
 const bool publish = true;
 
 // Stepper (MicroStepping 1/32)
-const int stepperSpeed = 25000;
-const int stepperAccel = 15000;
+const float stepperSpeed = 25000;
+const float stepperAccel = 25000;
 const long initialClosedPosition = 72000;
 
 // IR Sensors
