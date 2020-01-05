@@ -437,6 +437,7 @@ int setDesiredState(String requestedState) {
     } else {
         Log.warn("setDesiredState received invalid requestedState value: %s", requestedState.c_str());
         Particle.publish("setDesiredState-error", requestedState, PRIVATE);
+        overriddenDesiredDoorStateStatus = String::format("%s", doorStatesCString[overrideDoorState]);
         return 0;
     }
     Particle.publish("setDesiredState-success", requestedState, PRIVATE); 
@@ -475,11 +476,6 @@ void setupParticleCloud() {
         Particle.function("setDesiredState", setDesiredState);
         Particle.function("remoteCommand", remoteCommand);
         initialPublishComplete = true;
-    } else {
-        // Update string version of doorstate enum
-        desiredDoorStateStatus = String::format("%s", doorStatesCString[desiredDoorState]);
-        currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
-        overriddenDesiredDoorStateStatus = String::format("%s", doorStatesCString[overrideDoorState]);
     }
 }
 
@@ -498,6 +494,7 @@ void loop() {
         Log.info("DESIRED STATE CHANGED FROM: %s [%d] to %s [%d]",
                   doorStatesCString[lastDesiredDoorState], lastDesiredDoorState,
                   doorStatesCString[desiredDoorState], desiredDoorState);
+        desiredDoorStateStatus = String::format("%s", doorStatesCString[desiredDoorState]);
         if ( (lastDesiredDoorState == STATE_CLOSED) and (desiredDoorState != STATE_KEEPCLOSED) ) {
             // We were closing, but now need to open. Ideally as quickly as possible.
             // Set the stepper to think it's already reached the closed position.
@@ -510,6 +507,7 @@ void loop() {
         Log.info("CURRENT STATE CHANGED FROM: %s [%d] to %s [%d]",
                   doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
                   doorStatesCString[currentDoorState], currentDoorState);
+        currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
         lastCurrentDoorState = currentDoorState;
     }
 
