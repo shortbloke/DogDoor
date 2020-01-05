@@ -456,6 +456,7 @@ int remoteCommand(String command) {
 void setupParticleCloud() {
     if (!Particle.connected()) {
         Particle.connect();
+        initialPublishComplete = false;
     } else if (!initialPublishComplete) {
         Log.info("Connected publishing variables");
         // Setup Particle cloud variables
