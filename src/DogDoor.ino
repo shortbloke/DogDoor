@@ -522,7 +522,7 @@ void loop() {
                                   PRIVATE);
             }
         }
-        lastIndoorDetected = indoorSensorValue;
+        lastIndoorDetected = indoorDetected;
     }
     if (outdoorDetected != lastOutdoorDetected) {
         if (outdoorDetected) {
@@ -533,7 +533,7 @@ void loop() {
                                   PRIVATE);
             }
         }
-        lastOutdoorDetected = outdoorSensorValue;
+        lastOutdoorDetected = outdoorDetected;
     }
 
     // Act on desired state != current state
