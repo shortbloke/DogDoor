@@ -61,8 +61,7 @@ const char version[] = "1.1.0";
 const char buildDate[] = __DATE__ " " __TIME__;
 
 // Device Info
-String deviceID = "";
-String sysVer = "";
+String deviceString = "";
 String buildString = "";
 int resetReason = 0;
 int resetReasonData = 0;
@@ -74,8 +73,9 @@ int bottomLimitSwitchStatus = 0;
 int keepClosedSwitchStatus = 0;
 int keepOpenSwitchStatus = 0;
 int manualButtonSwitchStatus = 0;
-int desiredDoorStateStatus = 0;
-int currentDoorStateStatus = 0;
+String desiredDoorStateStatus = "";
+String currentDoorStateStatus = "";
+String overriddenDesiredDoorStateStatus = "";
 bool initialPublishComplete = false;
 const bool publish = true;
 
@@ -103,6 +103,8 @@ const int periodicLogInterval = 60000;  //  1 minute
 long openPosition = 0;
 long closedPosition = initialClosedPosition;
 
+// Keep in sync in ENUM for ease of logging
+const char* doorStatesCString[] = {"OPEN", "MOVING", "CLOSED", "KEEPOPEN", "KEEPCLOSED"};
 // Enum for states
 enum doorStates {
     STATE_OPEN = 0,
@@ -162,8 +164,9 @@ Timer keepOpenTimer(keepOpenTime, timerCallback, true);
  *********************************************************************************************************************/
 void setup() {
     // Setup Device information, doesn't change post boot
-    deviceID = System.deviceID();
-    sysVer = System.version();
+    deviceString = String::format("ID: %s - OS: %s",
+                                   System.deviceID().c_str(),
+                                   System.version().c_str());
     buildString = String::format("Version: %s - Build: %s", version, buildDate);
     resetReason = (int) System.resetReason();
     resetReasonData = (int) System.resetReasonData();
@@ -400,15 +403,17 @@ void closeDoor() {
  * Log Functions
  *********************************************************************************************************************/
 void periodicLog() {
-    Log.info("Device ID: %s", (const char*)deviceID);
-    Log.info("OS version: %s", (const char*)sysVer);
-    Log.info("Free Memory (kB): %d", (int)(System.freeMemory() / 1024));
+    Log.info("Device: %s", deviceString.c_str());
+    Log.info("App Version: %s", buildString.c_str());
+    Log.info("Free Memory (B): %d", System.freeMemory());
     Log.info("Uptime (mins): %d", (int) (System.uptime() / 60));
-    Log.info("System restart reason: %d - Data: %d", resetReason, resetReasonData);
-    Log.info("App Version: %s", (const char*)buildString);
-    Log.info("Current State: %d - Desired State: %d", currentDoorStateStatus, desiredDoorStateStatus);
-    Log.info("Sensors: Indoor: %d - OutDoor: %d - Push Button: %d - Keep Open: %d - Keep Closed: %d - Top Limit: %d - Bottom Limit: %d",
-              indoorSensorValue, outdoorSensorValue, manualButtonSwitchStatus,
+    Log.info("System restart reason: %d - %d", resetReason, resetReasonData);
+    Log.info("Current State: %s [%d] - Desired State: %s [%d]",
+              doorStatesCString[currentDoorState], currentDoorState,
+              doorStatesCString[desiredDoorState], desiredDoorState);
+    Log.info("Indoor: %d - Outdoor: %d - Button: %d",
+              indoorSensorValue, outdoorSensorValue, manualButtonSwitchStatus);
+    Log.info("KeepOpen: %d - KeepClosed: %d - Top: %d - Bottom: %d",
               keepOpenSwitchStatus, keepClosedSwitchStatus, topLimitSwitchStatus, bottomLimitSwitchStatus);
 }
 
@@ -417,20 +422,20 @@ void periodicLog() {
  * Particle Cloud Setup and Publishing for data
  *********************************************************************************************************************/
 int setDesiredState(String requestedState) {
-    Log.info("setDesiredState: %s", requestedState.toLowerCase());
-    if (requestedState.toLowerCase() == "open") {
+    Log.info("setDesiredState: %s", requestedState.c_str());
+    if (strcasecmp(requestedState.c_str(), "open")==0) {
         overriddenDesiredDoorState = STATE_OPEN;
         overrideDoorState = true;
-    } else if (requestedState.toLowerCase() == "keepopen") {
+    } else if (strcasecmp(requestedState.c_str(), "keepopen")==0) {
         overriddenDesiredDoorState = STATE_KEEPOPEN;
         overrideDoorState = true;
-    } else if (requestedState.toLowerCase() == "keepclosed") {
+    } else if (strcasecmp(requestedState.c_str(), "keepclosed")==0) {
         overriddenDesiredDoorState = STATE_KEEPCLOSED;
         overrideDoorState = true;
-    } else if (requestedState.toLowerCase() == "reset") {
+    } else if (strcasecmp(requestedState.c_str(), "reset")==0) {
         overrideDoorState = false;
     } else {
-        Log.warn("setDesiredState received invalid requestedState value: %s", requestedState);
+        Log.warn("setDesiredState received invalid requestedState value: %s", requestedState.c_str());
         Particle.publish("setDesiredState-error", requestedState, PRIVATE);
         return 0;
     }
@@ -439,8 +444,8 @@ int setDesiredState(String requestedState) {
 }
 
 int remoteCommand(String command) {
-    Log.info("remoteCommand: %s", command.toLowerCase());
-    if (command.toLowerCase() == "reset") {
+    Log.info("remoteCommand: %s", command.c_str());
+    if (strcasecmp(command.c_str(), "reset")==0) {
         Particle.publish("remoteCommand", "reset", PRIVATE);
         System.reset();
         return 1;
@@ -464,16 +469,16 @@ void setupParticleCloud() {
         Particle.variable("IndoorSensor", indoorSensorValue);
         Particle.variable("OutDoorSensor", outdoorSensorValue);
         Particle.variable("overrideDoorState", overrideDoorState);
-        Particle.variable("overriddenDesiredDoorState", overriddenDesiredDoorState);
+        Particle.variable("overriddenDesiredState", overriddenDesiredDoorStateStatus);
         // Setup Particle cloud functions
         Particle.function("setDesiredState", setDesiredState);
         Particle.function("remoteCommand", remoteCommand);
         initialPublishComplete = true;
     } else {
-        // Update int version of doorstate enum
-        desiredDoorStateStatus = (int) desiredDoorState;
-        currentDoorStateStatus = (int) currentDoorState;
-
+        // Update string version of doorstate enum
+        desiredDoorStateStatus = String::format("%s", doorStatesCString[desiredDoorState]);
+        currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
+        overriddenDesiredDoorStateStatus = String::format("%s", doorStatesCString[overrideDoorState]);
     }
 }
 
@@ -488,8 +493,10 @@ void loop() {
     }
     
     // Check for state changes
-    if (desiredDoorState != lastDesiredDoorState) {
-        Log.info("DESIRED STATE CHANGED FROM: %d to %d", lastDesiredDoorState, desiredDoorState);
+     if (desiredDoorState != lastDesiredDoorState) {
+        Log.info("DESIRED STATE CHANGED FROM: %s [%d] to %s [%d]",
+                  doorStatesCString[lastDesiredDoorState], lastDesiredDoorState,
+                  doorStatesCString[desiredDoorState], desiredDoorState);
         if ( (lastDesiredDoorState == STATE_CLOSED) and (desiredDoorState != STATE_KEEPCLOSED) ) {
             // We were closing, but now need to open. Ideally as quickly as possible.
             // Set the stepper to think it's already reached the closed position.
@@ -499,13 +506,15 @@ void loop() {
         lastDesiredDoorState = desiredDoorState;
     }
     if (currentDoorState != lastCurrentDoorState) {
-        Log.info("CURRENT STATE CHANGED FROM: %d to %d", lastCurrentDoorState, currentDoorState);
+        Log.info("CURRENT STATE CHANGED FROM: %s [%d] to %s [%d]",
+                  doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
+                  doorStatesCString[currentDoorState], currentDoorState);
         lastCurrentDoorState = currentDoorState;
     }
 
     if (indoorDetected != lastIndoorDetected) {
         if (indoorDetected) {
-            Log.info("MOTION DETECTED INDOOR:  %d", indoorSensorValue);
+            Log.info("MOTION DETECTED INDOOR: %d", indoorSensorValue);
             if (publish) {
                 Particle.publish("INDOOR-MOTION-DETECTED",
                                   String::format("%d", indoorSensorValue),
