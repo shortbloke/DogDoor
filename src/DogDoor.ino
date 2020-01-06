@@ -78,6 +78,7 @@ String currentDoorStateStatus = "";
 String overriddenDesiredDoorStateStatus = "";
 bool initialPublishComplete = false;
 const bool publish = true;
+int vitalsPublishInterval = 300;  // 5 minutes
 
 // Stepper (MicroStepping 1/32)
 const float stepperSpeed = 25000;
@@ -475,6 +476,8 @@ void setupParticleCloud() {
         // Setup Particle cloud functions
         Particle.function("setDesiredState", setDesiredState);
         Particle.function("remoteCommand", remoteCommand);
+        // publish vitals on a timed interval
+        Particle.publishVitals(vitalsPublishInterval);
         initialPublishComplete = true;
     }
 }
