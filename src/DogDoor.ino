@@ -88,7 +88,7 @@ const long initialClosedPosition = 72000;
 // IR Sensors
 long indoorSensorValue = 0;
 long outdoorSensorValue = 0;
-const long indoorIRSensorTriggerThreshold = 500;
+const long indoorIRSensorTriggerThreshold = 600;
 const long outdoorIRSensorTriggerThreshold = 1000;
 const int irSensorPollInterval = 100;
 bool indoorDetected = false;
@@ -273,10 +273,15 @@ bool indoorPresenceDetected() {
     indoorSensorValue = analogRead(indoorIRSensorPin);
     if (indoorSensorValue >= indoorIRSensorTriggerThreshold) {
         // Read again to try and avoid false trigger
+        delay(5);
         indoorSensorValue = analogRead(indoorIRSensorPin);
         if (indoorSensorValue >= indoorIRSensorTriggerThreshold) {
-            keepOpenTimer.changePeriodFromISR(keepOpenTime);  // Reset the timer to prevent closing
+            delay(5);
+            indoorSensorValue = analogRead(indoorIRSensorPin);
+            if (indoorSensorValue >= indoorIRSensorTriggerThreshold) {
+                keepOpenTimer.changePeriodFromISR(keepOpenTime);  // Reset the timer to prevent closing
             return true;
+            }
         }
     }
     return false;
@@ -285,10 +290,15 @@ bool indoorPresenceDetected() {
 bool outdoorPresenceDetected() {
     outdoorSensorValue = analogRead(outdoorIRSensorPin);
     if (outdoorSensorValue >= outdoorIRSensorTriggerThreshold) {
+        delay(5);
         outdoorSensorValue = analogRead(outdoorIRSensorPin);
         if (outdoorSensorValue >= outdoorIRSensorTriggerThreshold) {
-            keepOpenTimer.changePeriodFromISR(keepOpenTime);  // Reset the timer to prevent closing
+            delay(5);
+            outdoorSensorValue = analogRead(outdoorIRSensorPin);
+            if (outdoorSensorValue >= outdoorIRSensorTriggerThreshold) {
+                keepOpenTimer.changePeriodFromISR(keepOpenTime);  // Reset the timer to prevent closing
             return true;
+            }
         }
     }
     return false;
