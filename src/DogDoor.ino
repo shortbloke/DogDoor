@@ -98,7 +98,9 @@ bool lastOutdoorDetected = false;
 
 // Timers
 const int keepOpenTime = 10000;  // 10 seconds
+const bool periodicLogEnable = false;
 const int periodicLogInterval = 60000;  //  1 minute
+const int checkConnectedInterval = 600000; // 10 minutes
 
 // Limit end stop positions
 long openPosition = 0;
@@ -151,6 +153,8 @@ enum inputs {
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
 // Application Watchdog
 ApplicationWatchdog wd(wdTimeout, System.reset);
+// Particle Publish connection watchdog
+Timer particleCloudConnectedTimer(checkConnectedInterval, checkParticleCloudConnection);
 // Create AccelStepper
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 // Poll IR sensors
@@ -202,7 +206,9 @@ void setup() {
     stepper.disableOutputs();
 
     // Start background timers
-    periodicLogTimer.start();
+    if (periodicLogEnable) {
+        periodicLogTimer.start();
+    }
     pollIRSensorsTimer.start();
 
     // Initial states
@@ -367,6 +373,11 @@ void pollIRSensorISR() {
     desiredDoorState = getDesiredDoorState();
 }
 
+void checkParticleCloudConnection() {
+    if (!Particle.connected) {
+        System.reset();
+    }
+}
 
 /**********************************************************************************************************************
  * Stepper Actions
@@ -461,6 +472,7 @@ void setupParticleCloud() {
         initialPublishComplete = false;
     } else if (!initialPublishComplete) {
         Log.info("Connected publishing variables");
+        particleCloudConnectedTimer.start();  // Connection watchdog.
         // Setup Particle cloud variables
         Particle.variable("TopLimitSwitch", topLimitSwitchStatus);
         Particle.variable("BottomLimitSwitch", bottomLimitSwitchStatus);
@@ -487,16 +499,22 @@ void setupParticleCloud() {
  * Main Loop
  *********************************************************************************************************************/
 void loop() {
-    // Connect to Particle Cloud and publish variables and functions
-    if (publish) {
-        setupParticleCloud();
+    if (currentDoorState == desiredDoorState) {
+        // Ok we're not needing to move the stepper so can do some other things in the loop. 
+        // Otherwise we want to keep any many cycles free for running the stepper
+
+        // Connect to Particle Cloud and publish variables and functions
+        if (publish) {
+            setupParticleCloud();
+        }
+
     }
-    
-    // Check for state changes
-     if (desiredDoorState != lastDesiredDoorState) {
+
+    // Check for desiredDoorState changes - Log once
+    if (desiredDoorState != lastDesiredDoorState) {
         Log.info("DESIRED STATE CHANGED FROM: %s [%d] to %s [%d]",
-                  doorStatesCString[lastDesiredDoorState], lastDesiredDoorState,
-                  doorStatesCString[desiredDoorState], desiredDoorState);
+                doorStatesCString[lastDesiredDoorState], lastDesiredDoorState,
+                doorStatesCString[desiredDoorState], desiredDoorState);
         desiredDoorStateStatus = String::format("%s", doorStatesCString[desiredDoorState]);
         if ( (lastDesiredDoorState == STATE_CLOSED) and (desiredDoorState != STATE_KEEPCLOSED) ) {
             // We were closing, but now need to open. Ideally as quickly as possible.
@@ -506,38 +524,41 @@ void loop() {
         }
         lastDesiredDoorState = desiredDoorState;
     }
+
+    // check for currentDoorState changes - Log once
     if (currentDoorState != lastCurrentDoorState) {
         Log.info("CURRENT STATE CHANGED FROM: %s [%d] to %s [%d]",
-                  doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
-                  doorStatesCString[currentDoorState], currentDoorState);
+                    doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
+                    doorStatesCString[currentDoorState], currentDoorState);
         currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
         lastCurrentDoorState = currentDoorState;
     }
 
+    // Check indoorDetected change - Log once 
     if (indoorDetected != lastIndoorDetected) {
         if (indoorDetected) {
             Log.info("MOTION DETECTED INDOOR: %d", indoorSensorValue);
             if (publish) {
                 Particle.publish("INDOOR-MOTION-DETECTED",
-                                  String::format("%d", indoorSensorValue),
-                                  PRIVATE);
+                                String::format("%d", indoorSensorValue),
+                                PRIVATE);
             }
         }
         lastIndoorDetected = indoorDetected;
     }
+    // Check outdoorDetected change - Log once
     if (outdoorDetected != lastOutdoorDetected) {
         if (outdoorDetected) {
             Log.info("MOTION DETECTED OUTDOOR: %d", outdoorSensorValue);
             if (publish) {
                 Particle.publish("OUTDOOR-MOTION-DETECTED",
-                                  String::format("%d", outdoorSensorValue),
-                                  PRIVATE);
+                                String::format("%d", outdoorSensorValue),
+                                PRIVATE);
             }
         }
         lastOutdoorDetected = outdoorDetected;
     }
 
-    // Act on desired state != current state
     if ( (desiredDoorState == STATE_OPEN) or (desiredDoorState == STATE_KEEPOPEN) ) {
         if (currentDoorState != STATE_OPEN) {
             // Opening
