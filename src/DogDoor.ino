@@ -24,7 +24,7 @@
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
 SYSTEM_MODE(SEMI_AUTOMATIC);
 
-// Include the AccelStepper library:
+// Include the AccelStepper library (AccelStepperSpark):
 #include <AccelStepper.h>
 
 /**********************************************************************************************************************
@@ -68,43 +68,46 @@ int resetReasonData = 0;
 const int wdTimeout = 30000;  // 30 seconds watchdog timeout
 
 // Particle Cloud
-int topLimitSwitchStatus = 0;
-int bottomLimitSwitchStatus = 0;
-int keepClosedSwitchStatus = 0;
-int keepOpenSwitchStatus = 0;
-int manualButtonSwitchStatus = 0;
+volatile int topLimitSwitchStatus = 0;
+volatile int bottomLimitSwitchStatus = 0;
+volatile int keepClosedSwitchStatus = 0;
+volatile int keepOpenSwitchStatus = 0;
+volatile int manualButtonSwitchStatus = 0;
 String desiredDoorStateStatus = "";
 String currentDoorStateStatus = "";
 String overriddenDesiredDoorStateStatus = "";
 bool initialPublishComplete = false;
 const bool publish = true;
-int vitalsPublishInterval = 300;  // 5 minutes
+const int vitalsPublishInterval = 300;  // 5 minutes
+const int checkConnectedInterval = 600000; // 10 minutes
+
+// Periodic Serial Logging
+const int periodicLogInterval = 60000;  //  1 minute
+volatile bool periodicLogNow = false;
 
 // Stepper (MicroStepping 1/32)
 const float stepperSpeed = 25000;
 const float stepperAccel = 25000;
 const long initialClosedPosition = 72000;
+bool stopStepper = false;
 
 // IR Sensors
-long indoorSensorValue = 0;
-long outdoorSensorValue = 0;
+volatile long indoorSensorValue = 0;
+volatile long outdoorSensorValue = 0;
 const long indoorIRSensorTriggerThreshold = 600;
 const long outdoorIRSensorTriggerThreshold = 1000;
 const int irSensorPollInterval = 100;
-bool indoorDetected = false;
-bool outdoorDetected = false;
+volatile bool indoorDetected = false;
+volatile bool outdoorDetected = false;
 bool lastIndoorDetected = false;
 bool lastOutdoorDetected = false;
-
-// Timers
-const int keepOpenTime = 10000;  // 10 seconds
-const bool periodicLogEnable = false;
-const int periodicLogInterval = 60000;  //  1 minute
-const int checkConnectedInterval = 600000; // 10 minutes
 
 // Limit end stop positions
 long openPosition = 0;
 long closedPosition = initialClosedPosition;
+
+// Keep the door open for a period.
+const int keepOpenTime = 10000;  // 10 seconds 
 
 // Keep in sync in ENUM for ease of logging
 const char* doorStatesCString[] = {"OPEN", "MOVING", "CLOSED", "KEEPOPEN", "KEEPCLOSED"};
@@ -116,8 +119,8 @@ enum doorStates {
     STATE_KEEPOPEN = 3,
     STATE_KEEPCLOSED = 4,
 };
-enum doorStates desiredDoorState = STATE_CLOSED;
-enum doorStates currentDoorState;
+volatile enum doorStates desiredDoorState = STATE_CLOSED;
+volatile enum doorStates currentDoorState;
 enum doorStates lastDesiredDoorState;
 enum doorStates lastCurrentDoorState;
 
@@ -160,7 +163,7 @@ AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 // Poll IR sensors
 Timer pollIRSensorsTimer(irSensorPollInterval, pollIRSensorISR);
 // Periodic Log message timer
-Timer periodicLogTimer(periodicLogInterval, periodicLog);
+Timer periodicLogTimer(periodicLogInterval, setPeriodicLogNow);
 // Timer for how long the door is kept open after no presence detected.
 Timer keepOpenTimer(keepOpenTime, timerCallback, true);
 
@@ -206,9 +209,7 @@ void setup() {
     stepper.disableOutputs();
 
     // Start background timers
-    if (periodicLogEnable) {
-        periodicLogTimer.start();
-    }
+    periodicLogTimer.start();
     pollIRSensorsTimer.start();
 
     // Initial states
@@ -373,6 +374,10 @@ void pollIRSensorISR() {
     desiredDoorState = getDesiredDoorState();
 }
 
+void setPeriodicLogNow() {
+    periodicLogNow = true;
+}
+
 void checkParticleCloudConnection() {
     if (!Particle.connected) {
         System.reset();
@@ -410,6 +415,29 @@ void closeDoor() {
     stepper.run();
 }
 
+void checkStateChange() {
+    // Check for desiredDoorState changes - Log once
+    if (desiredDoorState != lastDesiredDoorState) {
+        Log.info("DESIRED STATE CHANGED FROM: %s [%d] to %s [%d]",
+                doorStatesCString[lastDesiredDoorState], lastDesiredDoorState,
+                doorStatesCString[desiredDoorState], desiredDoorState);
+        desiredDoorStateStatus = String::format("%s", doorStatesCString[desiredDoorState]);
+        if ( (lastDesiredDoorState == STATE_CLOSED) and (desiredDoorState != STATE_KEEPCLOSED) ) {
+            // We were closing, but now need to open. Ideally as quickly as possible.
+            stopStepper = true;  // Set flag
+        }
+        lastDesiredDoorState = desiredDoorState;
+    }
+
+    // check for currentDoorState changes - Log once
+    if (currentDoorState != lastCurrentDoorState) {
+        Log.info("CURRENT STATE CHANGED FROM: %s [%d] to %s [%d]",
+                    doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
+                    doorStatesCString[currentDoorState], currentDoorState);
+        currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
+        lastCurrentDoorState = currentDoorState;
+    }
+}
 
 /**********************************************************************************************************************
  * Log Functions
@@ -427,8 +455,44 @@ void periodicLog() {
               indoorSensorValue, outdoorSensorValue, manualButtonSwitchStatus);
     Log.info("KeepOpen: %d - KeepClosed: %d - Top: %d - Bottom: %d",
               keepOpenSwitchStatus, keepClosedSwitchStatus, topLimitSwitchStatus, bottomLimitSwitchStatus);
+    periodicLogNow = false;  // Reset, will be enabled by Timer ISR
 }
 
+void checkSensorChange() {
+    // Check indoorDetected change - Log once 
+    if (indoorDetected != lastIndoorDetected) {
+        if (indoorDetected) {
+            Log.info("MOTION DETECTED INDOOR: %d", indoorSensorValue);
+            if (publish) {
+                Particle.publish("INDOOR-MOTION-DETECTED",
+                                String::format("%d", indoorSensorValue),
+                                PRIVATE);
+            }
+        }
+        lastIndoorDetected = indoorDetected;
+    }
+    // Check outdoorDetected change - Log once
+    if (outdoorDetected != lastOutdoorDetected) {
+        if (outdoorDetected) {
+            Log.info("MOTION DETECTED OUTDOOR: %d", outdoorSensorValue);
+            if (publish) {
+                Particle.publish("OUTDOOR-MOTION-DETECTED",
+                                String::format("%d", outdoorSensorValue),
+                                PRIVATE);
+            }
+        }
+        lastOutdoorDetected = outdoorDetected;
+    }
+}
+
+void nonCriticalTasks() {
+    if (publish) {
+        setupParticleCloud();  // Connect to Particle Cloud and publish variables and functions
+    }
+    if (periodicLogNow) {
+        periodicLog();  // Log to serial port
+    }
+}
 
 /**********************************************************************************************************************
  * Particle Cloud Setup and Publishing for data
@@ -461,7 +525,7 @@ int remoteCommand(String command) {
     if (strcasecmp(command.c_str(), "reset")==0) {
         Particle.publish("remoteCommand", "reset", PRIVATE);
         System.reset();
-        return 1;
+        return 1;  // This will never be reached, so Particle Cloud will repor the command failed.
     }
     return 0;
 }
@@ -474,17 +538,18 @@ void setupParticleCloud() {
         Log.info("Connected publishing variables");
         particleCloudConnectedTimer.start();  // Connection watchdog.
         // Setup Particle cloud variables
-        Particle.variable("TopLimitSwitch", topLimitSwitchStatus);
-        Particle.variable("BottomLimitSwitch", bottomLimitSwitchStatus);
-        Particle.variable("KeepClosedSwitch", keepClosedSwitchStatus);
-        Particle.variable("KeepOpenSwitch", keepOpenSwitchStatus);
-        Particle.variable("ManualSwitch", manualButtonSwitchStatus);
+        Particle.variable("TopLimitSwitch", (int*)&topLimitSwitchStatus, INT);
+        Particle.variable("BottomLimitSwitch", (int*)&bottomLimitSwitchStatus, INT);
+        Particle.variable("KeepClosedSwitch", (int*)&keepClosedSwitchStatus, INT);
+        Particle.variable("KeepOpenSwitch", (int*)&keepOpenSwitchStatus, INT);
+        Particle.variable("ManualSwitch", (int*)&manualButtonSwitchStatus, INT);
         Particle.variable("DesiredState", desiredDoorStateStatus);
         Particle.variable("CurrentState", currentDoorStateStatus);
-        Particle.variable("IndoorSensor", indoorSensorValue);
-        Particle.variable("OutDoorSensor", outdoorSensorValue);
+        Particle.variable("IndoorSensor", (int*)&indoorSensorValue, INT);
+        Particle.variable("OutDoorSensor", (int*)&outdoorSensorValue, INT);
         Particle.variable("overrideDoorState", overrideDoorState);
         Particle.variable("overriddenDesiredState", overriddenDesiredDoorStateStatus);
+
         // Setup Particle cloud functions
         Particle.function("setDesiredState", setDesiredState);
         Particle.function("remoteCommand", remoteCommand);
@@ -502,61 +567,17 @@ void loop() {
     if (currentDoorState == desiredDoorState) {
         // Ok we're not needing to move the stepper so can do some other things in the loop. 
         // Otherwise we want to keep any many cycles free for running the stepper
-
-        // Connect to Particle Cloud and publish variables and functions
-        if (publish) {
-            setupParticleCloud();
-        }
-
+        nonCriticalTasks();
     }
 
-    // Check for desiredDoorState changes - Log once
-    if (desiredDoorState != lastDesiredDoorState) {
-        Log.info("DESIRED STATE CHANGED FROM: %s [%d] to %s [%d]",
-                doorStatesCString[lastDesiredDoorState], lastDesiredDoorState,
-                doorStatesCString[desiredDoorState], desiredDoorState);
-        desiredDoorStateStatus = String::format("%s", doorStatesCString[desiredDoorState]);
-        if ( (lastDesiredDoorState == STATE_CLOSED) and (desiredDoorState != STATE_KEEPCLOSED) ) {
-            // We were closing, but now need to open. Ideally as quickly as possible.
-            // Set the stepper to think it's already reached the closed position.
-            closedPosition = stepper.currentPosition();
-            stepper.setCurrentPosition(closedPosition);
-        }
-        lastDesiredDoorState = desiredDoorState;
-    }
+    checkStateChange();  // Check if curent or desired states have changed
+    checkSensorChange();  // Check if sensors have detected something, if so log once.
 
-    // check for currentDoorState changes - Log once
-    if (currentDoorState != lastCurrentDoorState) {
-        Log.info("CURRENT STATE CHANGED FROM: %s [%d] to %s [%d]",
-                    doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
-                    doorStatesCString[currentDoorState], currentDoorState);
-        currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
-        lastCurrentDoorState = currentDoorState;
-    }
-
-    // Check indoorDetected change - Log once 
-    if (indoorDetected != lastIndoorDetected) {
-        if (indoorDetected) {
-            Log.info("MOTION DETECTED INDOOR: %d", indoorSensorValue);
-            if (publish) {
-                Particle.publish("INDOOR-MOTION-DETECTED",
-                                String::format("%d", indoorSensorValue),
-                                PRIVATE);
-            }
-        }
-        lastIndoorDetected = indoorDetected;
-    }
-    // Check outdoorDetected change - Log once
-    if (outdoorDetected != lastOutdoorDetected) {
-        if (outdoorDetected) {
-            Log.info("MOTION DETECTED OUTDOOR: %d", outdoorSensorValue);
-            if (publish) {
-                Particle.publish("OUTDOOR-MOTION-DETECTED",
-                                String::format("%d", outdoorSensorValue),
-                                PRIVATE);
-            }
-        }
-        lastOutdoorDetected = outdoorDetected;
+    if (stopStepper) {
+        // Set the stepper to think it's already reached the closed position.
+        closedPosition = stepper.currentPosition();
+        stepper.setCurrentPosition(closedPosition);
+        stopStepper = false;  // reset flag
     }
 
     if ( (desiredDoorState == STATE_OPEN) or (desiredDoorState == STATE_KEEPOPEN) ) {
@@ -573,9 +594,9 @@ void loop() {
         if (currentDoorState != STATE_CLOSED) {
             closeDoor();
         } else {
+            stepper.disableOutputs();  // Disable Stepper to save power
             closedPosition = stepper.currentPosition();
             stepper.setCurrentPosition(closedPosition);
-            stepper.disableOutputs();  // Disable Stepper to save power
         }
     } else {
         Log.warn("Unexpected States - Desired: %d, Current: %d", desiredDoorState, currentDoorState);
