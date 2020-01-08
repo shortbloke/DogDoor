@@ -99,6 +99,7 @@ volatile bool periodicLogNow = false;
 const float stepperSpeed = 25000;
 const float stepperAccel = 25000;
 const long initialClosedPosition = 72000;
+bool stepperPowerSave = false;
 
 // IR Sensors
 volatile long indoorSensorValue = 0;
@@ -398,7 +399,10 @@ void checkParticleCloudConnection() {
  *********************************************************************************************************************/
 void driveStepper(long targetPosition) {
     // TODO: Check performance. Can we loop more quickly if we don't enable and repeat setting moveto?
-    stepper.enableOutputs();
+    if (stepperPowerSave) {
+        stepper.enableOutputs();
+        stepperPowerSave = false;
+    }
     stepper.moveTo(targetPosition);
     stepper.run();
 }
@@ -416,7 +420,7 @@ void openDoor() {
         }
         // Opening
         keepOpenTimer.changePeriod(keepOpenTime);  // Set or reset the timer whilst moving
-
+        
         if (!stepper.isRunning()) {
             // Move completed, but we're not there yet. Move more.
             Log.warn("Opening - Homing");
@@ -447,11 +451,12 @@ void closeDoor() {
             closedPosition = closedPosition + initialClosedPosition;
         }
         driveStepper(closedPosition);
-    } else {
+    } else if (!stepperPowerSave) {
         // Door Closed
         stepper.disableOutputs();  // Disable Stepper to save power
         closedPosition = stepper.currentPosition();
         stepper.setCurrentPosition(closedPosition);
+        stepperPowerSave = true;
     }
 }
 
