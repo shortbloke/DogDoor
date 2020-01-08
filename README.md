@@ -6,6 +6,12 @@ With the Particle Photons built in WiFi, I plan to integrate in the monitoring o
 
 *TODO - Add Frizting Diagram*
 
+## Connectivity
+
+The status of the various switches, sensors and other internal variables are exposed via Particle Cloud. This also provides some basic over-ride capabilities, including a remote reset.
+
+MQTT support has also been added to report state back to an MQTT Broker. The device also accepts some basic commands via MQTT, for example to open the door. This has been tested with HomeAssistant.io.
+
 ## Potential TODO List
 
 * Experiment with ISO11784 134.2K RFID Module to read RFID tags in our pets. As an alternative to using the infrared sensor outside.
