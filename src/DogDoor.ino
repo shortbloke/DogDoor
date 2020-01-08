@@ -18,7 +18,6 @@
  *               - Manual control switches read on state change
  * 
  * Author: Copyright (C) 2019-2020 Martin Rowan
- * Date: 1st January 2020
  */
 
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
@@ -57,7 +56,7 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
  * Global
  *********************************************************************************************************************/
 // Build
-const char version[] = "1.1.0";
+const char version[] = "1.3.0";
 const char buildDate[] = __DATE__ " " __TIME__;
 
 // Performance profiling
