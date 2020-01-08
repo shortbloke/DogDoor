@@ -88,27 +88,31 @@ String overriddenDesiredDoorStateStatus = "";
 bool initialPublishComplete = false;
 const bool publish = true;
 const int vitalsPublishInterval = 300;  // 5 minutes
-const int checkConnectedInterval = 600000; // 10 minutes
+const int checkConnectedInterval = 600000;  // 10 minutes
 bool systemResetRequested = false;
 
 // Periodic Serial Logging
 const int periodicLogInterval = 60000;  //  1 minute
+
+// Flags
 volatile bool periodicLogNow = false;
+volatile bool checkStateNow = false;
+volatile bool checkSensorNow = false;
 
 // Stepper (MicroStepping 1/32)
 const float stepperSpeed = 25000;
 const float stepperAccel = 25000;
 const long initialClosedPosition = 72000;
 bool stepperPowerSave = false;
-bool openDoor1stLoop = true;
-
+bool openDoorInitialLoop = true;
+bool closeDoorInitialLoop = true;
 
 // IR Sensors
 volatile long indoorSensorValue = 0;
 volatile long outdoorSensorValue = 0;
 const long indoorIRSensorTriggerThreshold = 600;
 const long outdoorIRSensorTriggerThreshold = 1000;
-const int irSensorPollInterval = 100;
+const int irSensorPollInterval = 250;  // 1/4 second
 volatile bool indoorDetected = false;
 volatile bool outdoorDetected = false;
 bool lastIndoorDetected = false;
@@ -375,18 +379,28 @@ void timerCallback() {
 void limitSwitchISR() {
     readLimitSwitchValues();
     currentDoorState = getCurrentDoorState();
+    checkStateNow = true;  // Since ISR called, something has changed
 }
 
 void switchISR() {
     readSwitchValues();
     desiredDoorState = getDesiredDoorState();
-
+    checkStateNow = true;  // Since ISR called, something has changed
 }
 
 void pollIRSensorISR() {
+    bool initialIndoor = indoorDetected;
+    bool initialOutdoor = outdoorDetected; 
     indoorDetected = indoorPresenceDetected();
     outdoorDetected = outdoorPresenceDetected();
+    if ( (initialIndoor != indoorDetected) or (initialOutdoor != outdoorDetected) ){
+        checkSensorNow = true;  // Trigger only on change
+    }
+    doorStates initialState = desiredDoorState;
     desiredDoorState = getDesiredDoorState();
+    if (initialState != desiredDoorState) {
+        checkStateNow = true;  // Trigger only on change
+    }
 }
 
 void setPeriodicLogNow() {
@@ -402,16 +416,6 @@ void checkParticleCloudConnection() {
 /**********************************************************************************************************************
  * Stepper Actions
  *********************************************************************************************************************/
-void driveStepper(long targetPosition) {
-    // TODO: Check performance. Can we loop more quickly if we don't enable and repeat setting moveto?
-    if (stepperPowerSave) {
-        stepper.enableOutputs();
-        stepperPowerSave = false;
-    }
-    stepper.moveTo(targetPosition);
-    stepper.run();
-}
-
 void stopStepper() {
     // Set the stepper to think it's already reached the closed position.
     closedPosition = stepper.currentPosition();
@@ -420,19 +424,21 @@ void stopStepper() {
 
 void openDoor() {
     if (currentDoorState != STATE_OPEN) {
-        if (openDoor1stLoop) {
+        if (openDoorInitialLoop) {
             if (performanceProfiling) {
                 openStart = System.ticks();
             }
             keepOpenTimer.start();
-            openDoor1stLoop = false;
-        }
-        if (!stepper.isRunning()) {
+            stepper.enableOutputs();
+            stepper.moveTo(openPosition);
+            openDoorInitialLoop = false;
+        } else if (stepper.distanceToGo() == 0) {
             // Move completed, but we're not there yet. Move more.
             Log.warn("Opening - Homing");
             openPosition = openPosition - initialClosedPosition;
+            stepper.moveTo(openPosition);
         }
-        driveStepper(openPosition);
+        stepper.run();
     } else {
         if ( (performanceProfiling) and (openStart > 0) ) {
             openEnd = System.ticks();
@@ -440,30 +446,38 @@ void openDoor() {
             openStart = 0;
         }
         // Door Open
-        openPosition = 0;  // Set Zero position
-        stepper.setCurrentPosition(openPosition); // Set or reset stepper home position
-        openDoor1stLoop = true;  // reset flag
+        // openPosition = 0;  // Set Zero position
+        openPosition = -10000;  // Remove decleration on open.
+        stepper.setCurrentPosition(0);  // Set or reset stepper home position
+        openDoorInitialLoop = true;  // reset flag
     }
 }
 
 void closeDoor() {
     if (currentDoorState != STATE_CLOSED) {
-        // Closing
-        if (closedPosition < 100) {  // Improbable value (i.e. powered on closed)
-            closedPosition = initialClosedPosition;
-        }
-        if (!stepper.isRunning()) {  // TODO: check this doesn't trigger on 1st time through
+        if (closeDoorInitialLoop) {
+            if (closedPosition < 100) {  // Improbable value (i.e. powered on closed)
+                closedPosition = initialClosedPosition;
+            }
+            stepper.enableOutputs();
+            stepper.moveTo(closedPosition);
+            stepperPowerSave = false;
+            closeDoorInitialLoop = false;
+        } else if (stepper.distanceToGo() == 0) {
             // Move completed, but we're not there yet. Move more.
             Log.warn("Closing - Homing");
             closedPosition = closedPosition + initialClosedPosition;
+            stepper.moveTo(closedPosition);
+            stepperPowerSave = false;
         }
-        driveStepper(closedPosition);
+        stepper.run();
     } else if (!stepperPowerSave) {
         // Door Closed
         stepper.disableOutputs();  // Disable Stepper to save power
         closedPosition = stepper.currentPosition();
         stepper.setCurrentPosition(closedPosition);
         stepperPowerSave = true;
+        closeDoorInitialLoop = true;
     }
 }
 
@@ -649,8 +663,13 @@ void loop() {
         }
     }
 
-    checkStateChange();  // Check if curent or desired states have changed
-    checkSensorChange();  // Check if sensors have detected something, if so log once.
+    if ( (desiredDoorState != STATE_OPEN) and (checkSensorNow) ){  // Only check if we're not already opening
+        checkSensorChange();  // Check if sensors have detected something, if so log once.
+    }
+
+    if (checkStateNow) {
+        checkStateChange();  // Check if curent or desired states have changed
+    }
 
     if ( (desiredDoorState == STATE_OPEN) or (desiredDoorState == STATE_KEEPOPEN) ) {
         openDoor();
