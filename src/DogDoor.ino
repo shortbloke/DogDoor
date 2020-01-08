@@ -60,6 +60,15 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 const char version[] = "1.1.0";
 const char buildDate[] = __DATE__ " " __TIME__;
 
+// Performance profiling
+bool performanceProfiling = false;
+// For Main Loop
+uint32_t duration = 0;
+// For Stepper motor time to open door
+uint32_t openDuration = 0;
+uint32_t openStart = 0;
+uint32_t openEnd = 0;
+
 // Device Info
 String deviceString = "";
 String buildString = "";
@@ -80,6 +89,7 @@ bool initialPublishComplete = false;
 const bool publish = true;
 const int vitalsPublishInterval = 300;  // 5 minutes
 const int checkConnectedInterval = 600000; // 10 minutes
+bool systemResetRequested = false;
 
 // Periodic Serial Logging
 const int periodicLogInterval = 60000;  //  1 minute
@@ -89,7 +99,6 @@ volatile bool periodicLogNow = false;
 const float stepperSpeed = 25000;
 const float stepperAccel = 25000;
 const long initialClosedPosition = 72000;
-bool stopStepper = false;
 
 // IR Sensors
 volatile long indoorSensorValue = 0;
@@ -387,34 +396,68 @@ void checkParticleCloudConnection() {
 /**********************************************************************************************************************
  * Stepper Actions
  *********************************************************************************************************************/
+void driveStepper(long targetPosition) {
+    // TODO: Check performance. Can we loop more quickly if we don't enable and repeat setting moveto?
+    stepper.enableOutputs();
+    stepper.moveTo(targetPosition);
+    stepper.run();
+}
+
+void stopStepper() {
+    // Set the stepper to think it's already reached the closed position.
+    closedPosition = stepper.currentPosition();
+    stepper.setCurrentPosition(closedPosition);
+}
+
 void openDoor() {
     if (currentDoorState != STATE_OPEN) {
-        if ((openPosition - stepper.currentPosition()) == 0) {
-            // We expect to be open, but we're not. Move further.
+        if ( (performanceProfiling) and (openStart == 0) ) {
+            openStart = System.ticks();
+        }
+        // Opening
+        keepOpenTimer.changePeriod(keepOpenTime);  // Set or reset the timer whilst moving
+
+        if (!stepper.isRunning()) {
+            // Move completed, but we're not there yet. Move more.
             Log.warn("Opening - Homing");
             openPosition = openPosition - initialClosedPosition;
         }
-        stepper.enableOutputs();
-        stepper.moveTo(openPosition);
-        stepper.run();
+        driveStepper(openPosition);
+    } else {
+        if ( (performanceProfiling) and (openStart > 0) ) {
+            openEnd = System.ticks();
+            openDuration = (openEnd-openStart)/System.ticksPerMicrosecond();
+            openStart = 0;
+        }
+        // Door Open
+        openPosition = 0; // Set Zero position
+        stepper.setCurrentPosition(openPosition); // Set or reset stepper home position
     }
 }
 
 void closeDoor() {
-    if (closedPosition < 100) {  // Improbable value, reset closedPosition
-                                 // For example if we start close to the closedSwitch
-        closedPosition = initialClosedPosition;
+    if (currentDoorState != STATE_CLOSED) {
+        // Closing
+        if (closedPosition < 100) {  // Improbable value (i.e. powered on closed)
+            closedPosition = initialClosedPosition;
+        }
+        if (!stepper.isRunning()) {  // TODO: check this doesn't trigger on 1st time through
+            // Move completed, but we're not there yet. Move more.
+            Log.warn("Closing - Homing");
+            closedPosition = closedPosition + initialClosedPosition;
+        }
+        driveStepper(closedPosition);
+    } else {
+        // Door Closed
+        stepper.disableOutputs();  // Disable Stepper to save power
+        closedPosition = stepper.currentPosition();
+        stepper.setCurrentPosition(closedPosition);
     }
-    if ((closedPosition - stepper.currentPosition()) == 0) {
-        // We expect to be closed but we're not. Move further
-        Log.warn("Closing - Homing");
-        closedPosition = closedPosition + initialClosedPosition;
-    }
-    stepper.enableOutputs();
-    stepper.moveTo(closedPosition);
-    stepper.run();
 }
 
+/**********************************************************************************************************************
+ * Check for state changes
+ *********************************************************************************************************************/
 void checkStateChange() {
     // Check for desiredDoorState changes - Log once
     if (desiredDoorState != lastDesiredDoorState) {
@@ -424,7 +467,7 @@ void checkStateChange() {
         desiredDoorStateStatus = String::format("%s", doorStatesCString[desiredDoorState]);
         if ( (lastDesiredDoorState == STATE_CLOSED) and (desiredDoorState != STATE_KEEPCLOSED) ) {
             // We were closing, but now need to open. Ideally as quickly as possible.
-            stopStepper = true;  // Set flag
+            stopStepper();
         }
         lastDesiredDoorState = desiredDoorState;
     }
@@ -524,8 +567,19 @@ int remoteCommand(String command) {
     Log.info("remoteCommand: %s", command.c_str());
     if (strcasecmp(command.c_str(), "reset")==0) {
         Particle.publish("remoteCommand", "reset", PRIVATE);
-        System.reset();
-        return 1;  // This will never be reached, so Particle Cloud will repor the command failed.
+        systemResetRequested = true;
+        return 1;
+    }
+    return 0;
+}
+
+int profile(String command) {
+    if (strcasecmp(command.c_str(), "true")==0) {
+        performanceProfiling = true;
+        return 1;
+    } else if (strcasecmp(command.c_str(), "false")==0) {
+        performanceProfiling = false;
+        return 1;
     }
     return 0;
 }
@@ -549,10 +603,14 @@ void setupParticleCloud() {
         Particle.variable("OutDoorSensor", (int*)&outdoorSensorValue, INT);
         Particle.variable("overrideDoorState", overrideDoorState);
         Particle.variable("overriddenDesiredState", overriddenDesiredDoorStateStatus);
+        Particle.variable("PerfProfiling", performanceProfiling);
+        Particle.variable("LoopDuration", duration);
+        Particle.variable("OpenDuration", openDuration);
 
         // Setup Particle cloud functions
         Particle.function("setDesiredState", setDesiredState);
         Particle.function("remoteCommand", remoteCommand);
+        Particle.function("PerfProfiling", profile);
         // publish vitals on a timed interval
         Particle.publishVitals(vitalsPublishInterval);
         initialPublishComplete = true;
@@ -564,41 +622,33 @@ void setupParticleCloud() {
  * Main Loop
  *********************************************************************************************************************/
 void loop() {
+    uint32_t start;
+    if (performanceProfiling) {
+        start = System.ticks();
+    }
+
     if (currentDoorState == desiredDoorState) {
         // Ok we're not needing to move the stepper so can do some other things in the loop. 
         // Otherwise we want to keep any many cycles free for running the stepper
         nonCriticalTasks();
+        if (systemResetRequested) {
+            delay(2000);  // Wait a couple of seconds to allow outstanding messages to be sent.
+            System.reset();
+        }
     }
 
     checkStateChange();  // Check if curent or desired states have changed
     checkSensorChange();  // Check if sensors have detected something, if so log once.
 
-    if (stopStepper) {
-        // Set the stepper to think it's already reached the closed position.
-        closedPosition = stepper.currentPosition();
-        stepper.setCurrentPosition(closedPosition);
-        stopStepper = false;  // reset flag
-    }
-
     if ( (desiredDoorState == STATE_OPEN) or (desiredDoorState == STATE_KEEPOPEN) ) {
-        if (currentDoorState != STATE_OPEN) {
-            // Opening
-            keepOpenTimer.changePeriod(keepOpenTime);  // Set or reset the timer whilst moving
-            openDoor();
-        } else {
-            // Door Open
-            openPosition = 0;
-            stepper.setCurrentPosition(openPosition); // Set or reset stepper home position
-        }
+        openDoor();
     } else if ( (desiredDoorState == STATE_CLOSED) or (desiredDoorState == STATE_KEEPCLOSED) ) {
-        if (currentDoorState != STATE_CLOSED) {
-            closeDoor();
-        } else {
-            stepper.disableOutputs();  // Disable Stepper to save power
-            closedPosition = stepper.currentPosition();
-            stepper.setCurrentPosition(closedPosition);
-        }
+        closeDoor();
     } else {
-        Log.warn("Unexpected States - Desired: %d, Current: %d", desiredDoorState, currentDoorState);
+        Log.warn("Unexpected State - Desired: %d, Current: %d", desiredDoorState, currentDoorState);
+    }
+    if (performanceProfiling) {
+        uint32_t end = System.ticks();
+        duration = (end-start)/System.ticksPerMicrosecond();
     }
 }
