@@ -100,6 +100,8 @@ const float stepperSpeed = 25000;
 const float stepperAccel = 25000;
 const long initialClosedPosition = 72000;
 bool stepperPowerSave = false;
+bool openDoor1stLoop = true;
+
 
 // IR Sensors
 volatile long indoorSensorValue = 0;
@@ -365,6 +367,9 @@ void timerCallback() {
         overrideDoorState = false;
     }
     desiredDoorState = getDesiredDoorState();
+    if (currentDoorState != STATE_OPEN) {
+        keepOpenTimer.changePeriodFromISR(keepOpenTime);
+    }
 }
 
 void limitSwitchISR() {
@@ -415,12 +420,13 @@ void stopStepper() {
 
 void openDoor() {
     if (currentDoorState != STATE_OPEN) {
-        if ( (performanceProfiling) and (openStart == 0) ) {
-            openStart = System.ticks();
+        if (openDoor1stLoop) {
+            if (performanceProfiling) {
+                openStart = System.ticks();
+            }
+            keepOpenTimer.start();
+            openDoor1stLoop = false;
         }
-        // Opening
-        keepOpenTimer.changePeriod(keepOpenTime);  // Set or reset the timer whilst moving
-        
         if (!stepper.isRunning()) {
             // Move completed, but we're not there yet. Move more.
             Log.warn("Opening - Homing");
@@ -434,8 +440,9 @@ void openDoor() {
             openStart = 0;
         }
         // Door Open
-        openPosition = 0; // Set Zero position
+        openPosition = 0;  // Set Zero position
         stepper.setCurrentPosition(openPosition); // Set or reset stepper home position
+        openDoor1stLoop = true;  // reset flag
     }
 }
 
