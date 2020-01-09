@@ -55,6 +55,11 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 /**********************************************************************************************************************
  * Global
  *********************************************************************************************************************/
+
+// TODO: Clean up ordering and grouping of vars. It's a bit of a mess.
+// TODO: Review var naming.
+// TODO: Review function names
+
 // Build
 const char version[] = "1.3.0";
 const char buildDate[] = __DATE__ " " __TIME__;
@@ -97,6 +102,8 @@ const int periodicLogInterval = 60000;  //  1 minute
 volatile bool periodicLogNow = false;
 volatile bool checkStateNow = false;
 volatile bool checkSensorNow = false;
+volatile bool runNonCriticalTasksNow = true;  // Run soon after startup
+const int runNonCriticalTasksMaxInterval = 300000;  // 5 minutes
 
 // Stepper (MicroStepping 1/32)
 const float stepperSpeed = 25000;
@@ -173,6 +180,8 @@ SerialLogHandler logHandler(LOG_LEVEL_INFO);
 ApplicationWatchdog wd(wdTimeout, System.reset);
 // Particle Publish connection watchdog
 Timer particleCloudConnectedTimer(checkConnectedInterval, checkParticleCloudConnection);
+// Ensure non-critical tasks run periodically
+Timer nonCriticalTaskTimer(runNonCriticalTasksMaxInterval, setRunNonCriticalTasksNow);
 // Create AccelStepper
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 // Poll IR sensors
@@ -412,6 +421,10 @@ void checkParticleCloudConnection() {
     }
 }
 
+void setRunNonCriticalTasksNow() {
+    runNonCriticalTasksNow = true;
+}
+
 /**********************************************************************************************************************
  * Stepper Actions
  *********************************************************************************************************************/
@@ -554,6 +567,8 @@ void checkSensorChange() {
 }
 
 void nonCriticalTasks() {
+    runNonCriticalTasksNow = false;
+    nonCriticalTaskTimer.changePeriod(runNonCriticalTasksMaxInterval); 
     if (publish) {
         setupParticleCloud();  // Connect to Particle Cloud and publish variables and functions
     }
@@ -652,7 +667,7 @@ void loop() {
         start = System.ticks();
     }
 
-    if (currentDoorState == desiredDoorState) {
+    if ( (currentDoorState == desiredDoorState) or (runNonCriticalTasksNow) ) {
         // Ok we're not needing to move the stepper so can do some other things in the loop. 
         // Otherwise we want to keep any many cycles free for running the stepper
         nonCriticalTasks();
