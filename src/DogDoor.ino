@@ -497,6 +497,7 @@ void closeDoor() {
  * Check for state changes
  *********************************************************************************************************************/
 void checkStateChange() {
+    checkStateNow = false;
     // Check for desiredDoorState changes - Log once
     if (desiredDoorState != lastDesiredDoorState) {
         Log.info("DESIRED STATE CHANGED FROM: %s [%d] to %s [%d]",
@@ -524,6 +525,7 @@ void checkStateChange() {
  * Log Functions
  *********************************************************************************************************************/
 void periodicLog() {
+    periodicLogNow = false;  // Reset, will be enabled by Timer ISR
     Log.info("Device: %s", deviceString.c_str());
     Log.info("App Version: %s", buildString.c_str());
     Log.info("Free Memory (B): %d", System.freeMemory());
@@ -536,10 +538,10 @@ void periodicLog() {
               indoorSensorValue, outdoorSensorValue, manualButtonSwitchStatus);
     Log.info("KeepOpen: %d - KeepClosed: %d - Top: %d - Bottom: %d",
               keepOpenSwitchStatus, keepClosedSwitchStatus, topLimitSwitchStatus, bottomLimitSwitchStatus);
-    periodicLogNow = false;  // Reset, will be enabled by Timer ISR
 }
 
 void checkSensorChange() {
+    checkSensorNow = false;
     // Check indoorDetected change - Log once 
     if (indoorDetected != lastIndoorDetected) {
         if (indoorDetected) {
