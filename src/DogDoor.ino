@@ -7,6 +7,7 @@
  *                - Home and End limit microswitches
  *                - 2 x NEMA17 Stepper motors via TB6600 Stepper controller, set to 1/32 micro-stepping
  *                - AccelStepper library provides acceleration function to stepper controller
+ *                - MQTT library to provide control and state information reporting to HomeAssistant.io
  *                - State information accessible via Particle.io cloud
  *                - Override control and system commands via Particle.io cloud
  *
@@ -23,8 +24,8 @@
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
 SYSTEM_MODE(SEMI_AUTOMATIC);
 
-// Include the AccelStepper library (AccelStepperSpark):
-#include <AccelStepper.h>
+#include <AccelStepper.h>  // Include the AccelStepper library (AccelStepperSpark):
+#include <MQTT.h>  // Include MQTT Library for integration with HomeAssistant.io
 
 /**********************************************************************************************************************
  * Define GPIO Pins
@@ -61,8 +62,15 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 // TODO: Review function names
 
 // Build
-const char version[] = "1.3.0";
+const char version[] = "1.4.0";
 const char buildDate[] = __DATE__ " " __TIME__;
+
+// MQTT
+byte mqttServer[] = {192,168,200,45};
+const char *mqttUser = "username";
+const char *mqttPassword = "password";
+const bool enableMqtt = true;
+bool mqttConnected = false;
 
 // Performance profiling
 bool performanceProfiling = false;
@@ -190,6 +198,8 @@ Timer pollIRSensorsTimer(irSensorPollInterval, pollIRSensorISR);
 Timer periodicLogTimer(periodicLogInterval, setPeriodicLogNow);
 // Timer for how long the door is kept open after no presence detected.
 Timer keepOpenTimer(keepOpenTime, timerCallback, true);
+// MQTT Client
+MQTT mqttClient(mqttServer, 1883, mqttCallback);
 
 /**********************************************************************************************************************
  * Setup
@@ -516,6 +526,10 @@ void checkStateChange() {
         Log.info("CURRENT STATE CHANGED FROM: %s [%d] to %s [%d]",
                     doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
                     doorStatesCString[currentDoorState], currentDoorState);
+        if ( (enableMqtt) and (mqttClient.isConnected()) ) {
+            mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState], true);
+            Log.info("MQTT Publish currentDoorState change");
+        }
         currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
         lastCurrentDoorState = currentDoorState;
     }
@@ -573,6 +587,13 @@ void nonCriticalTasks() {
     nonCriticalTaskTimer.changePeriod(runNonCriticalTasksMaxInterval); 
     if (publish) {
         setupParticleCloud();  // Connect to Particle Cloud and publish variables and functions
+    }
+    if (enableMqtt) {
+        if (!mqttConnected) {
+            setupMqtt();
+        } else {
+            mqttConnected = mqttClient.loop();
+        }
     }
     if (periodicLogNow) {
         periodicLog();  // Log to serial port
@@ -648,6 +669,7 @@ void setupParticleCloud() {
         Particle.variable("PerfProfiling", performanceProfiling);
         Particle.variable("LoopDuration", duration);
         Particle.variable("OpenDuration", openDuration);
+        Particle.variable("MTTConnected", mqttConnected);
 
         // Setup Particle cloud functions
         Particle.function("setDesiredState", setDesiredState);
@@ -661,6 +683,40 @@ void setupParticleCloud() {
 
 
 /**********************************************************************************************************************
+ * MQTT
+ *********************************************************************************************************************/
+// recieve message
+void setupMqtt() {
+    if (!mqttClient.isConnected()) {
+        mqttConnected = false;
+        mqttClient.connect("particle", mqttUser, mqttPassword);
+    } else if (!mqttConnected) {
+        Log.info("MQTT Connected!");
+        bool pub1 = mqttClient.publish("homeassistant/cover/petdoor/availability", "online", true);
+        bool pub2 = mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState], true);
+        bool sub1 = mqttClient.subscribe("homeassistant/cover/petdoor/set");
+        bool sub2 = mqttClient.subscribe("homeassistant/cover/petdoor/state");
+        mqttConnected = (pub1 and pub2 and sub1 and sub2);  // All returned sucess
+    }
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    char p[length + 1];
+    memcpy(p, payload, length);
+    p[length] = NULL;
+    String message(p);
+
+    if (strcasecmp(topic, "homeassistant/cover/petdoor/set")==0) {
+        Log.info("MQTT - Command Received: homeassistant/cover/petdoor/set");
+        if (publish) {
+            Particle.publish("mqtt command received. petdoor/set", message, PRIVATE);
+        }
+        setDesiredState(message);  // Use existing Particle Cloud Function to process command
+    }
+}
+
+
+/**********************************************************************************************************************
  * Main Loop
  *********************************************************************************************************************/
 void loop() {
@@ -668,7 +724,6 @@ void loop() {
     if (performanceProfiling) {
         start = System.ticks();
     }
-
     if ( (currentDoorState == desiredDoorState) or (runNonCriticalTasksNow) ) {
         // Ok we're not needing to move the stepper so can do some other things in the loop. 
         // Otherwise we want to keep any many cycles free for running the stepper
@@ -679,7 +734,7 @@ void loop() {
         }
     }
 
-    if ( (desiredDoorState != STATE_OPEN) and (checkSensorNow) ){  // Only check if we're not already opening
+    if ( (currentDoorState != STATE_MOVING) and (checkSensorNow) ){  // Only check if we're not already opening
         checkSensorChange();  // Check if sensors have detected something, if so log once.
     }
 
