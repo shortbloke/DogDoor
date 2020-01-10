@@ -507,6 +507,7 @@ void closeDoor() {
  * Check for state changes
  *********************************************************************************************************************/
 void checkStateChange() {
+    checkStateNow = false;
     // Check for desiredDoorState changes - Log once
     if (desiredDoorState != lastDesiredDoorState) {
         Log.info("DESIRED STATE CHANGED FROM: %s [%d] to %s [%d]",
@@ -526,7 +527,7 @@ void checkStateChange() {
                     doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
                     doorStatesCString[currentDoorState], currentDoorState);
         if ( (enableMqtt) and (mqttClient.isConnected()) ) {
-            mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState]);
+            mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState], true);
             Log.info("MQTT Publish currentDoorState change");
         }
         currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
@@ -538,6 +539,7 @@ void checkStateChange() {
  * Log Functions
  *********************************************************************************************************************/
 void periodicLog() {
+    periodicLogNow = false;  // Reset, will be enabled by Timer ISR
     Log.info("Device: %s", deviceString.c_str());
     Log.info("App Version: %s", buildString.c_str());
     Log.info("Free Memory (B): %d", System.freeMemory());
@@ -550,10 +552,10 @@ void periodicLog() {
               indoorSensorValue, outdoorSensorValue, manualButtonSwitchStatus);
     Log.info("KeepOpen: %d - KeepClosed: %d - Top: %d - Bottom: %d",
               keepOpenSwitchStatus, keepClosedSwitchStatus, topLimitSwitchStatus, bottomLimitSwitchStatus);
-    periodicLogNow = false;  // Reset, will be enabled by Timer ISR
 }
 
 void checkSensorChange() {
+    checkSensorNow = false;
     // Check indoorDetected change - Log once 
     if (indoorDetected != lastIndoorDetected) {
         if (indoorDetected) {
@@ -667,6 +669,7 @@ void setupParticleCloud() {
         Particle.variable("PerfProfiling", performanceProfiling);
         Particle.variable("LoopDuration", duration);
         Particle.variable("OpenDuration", openDuration);
+        Particle.variable("MTTConnected", mqttConnected);
 
         // Setup Particle cloud functions
         Particle.function("setDesiredState", setDesiredState);
@@ -689,8 +692,8 @@ void setupMqtt() {
         mqttClient.connect("particle", mqttUser, mqttPassword);
     } else if (!mqttConnected) {
         Log.info("MQTT Connected!");
-        bool pub1 = mqttClient.publish("homeassistant/cover/petdoor/availability", "online");
-        bool pub2 = mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState]);
+        bool pub1 = mqttClient.publish("homeassistant/cover/petdoor/availability", "online", true);
+        bool pub2 = mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState], true);
         bool sub1 = mqttClient.subscribe("homeassistant/cover/petdoor/set");
         bool sub2 = mqttClient.subscribe("homeassistant/cover/petdoor/state");
         mqttConnected = (pub1 and pub2 and sub1 and sub2);  // All returned sucess
@@ -721,7 +724,6 @@ void loop() {
     if (performanceProfiling) {
         start = System.ticks();
     }
-
     if ( (currentDoorState == desiredDoorState) or (runNonCriticalTasksNow) ) {
         // Ok we're not needing to move the stepper so can do some other things in the loop. 
         // Otherwise we want to keep any many cycles free for running the stepper
@@ -732,7 +734,7 @@ void loop() {
         }
     }
 
-    if ( (desiredDoorState != STATE_OPEN) and (checkSensorNow) ){  // Only check if we're not already opening
+    if ( (currentDoorState != STATE_MOVING) and (checkSensorNow) ){  // Only check if we're not already opening
         checkSensorChange();  // Check if sensors have detected something, if so log once.
     }
 
