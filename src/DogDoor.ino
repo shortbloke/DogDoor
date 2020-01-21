@@ -679,7 +679,7 @@ void setupParticleCloud() {
         bool pubv12 = Particle.variable("PerfProfiling", performanceProfiling);
         bool pubv13 = Particle.variable("LoopDuration", duration);
         bool pubv14 = Particle.variable("OpenDuration", openDuration);
-        bool pubv15 = Particle.variable("MTTConnected", mqttConnected);
+        bool pubv15 = Particle.variable("MQTTConnected", mqttConnected);
         bool publishVariablesSuccess = (pubv1 and pubv2 and pubv3 and pubv4 and pubv5 and pubv6 and pubv7 and pubv8
                                         and pubv9 and pubv10 and pubv11 and pubv12 and pubv13 and pubv14 and pubv15);
 
