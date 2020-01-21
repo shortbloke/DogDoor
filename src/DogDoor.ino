@@ -62,7 +62,7 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 // TODO: Review function names
 
 // Build
-const char version[] = "1.4.0";
+const char version[] = "1.4.1";
 const char buildDate[] = __DATE__ " " __TIME__;
 
 // MQTT
@@ -124,7 +124,7 @@ bool closeDoorInitialLoop = true;
 // IR Sensors
 volatile long indoorSensorValue = 0;
 volatile long outdoorSensorValue = 0;
-const long indoorIRSensorTriggerThreshold = 600;
+const long indoorIRSensorTriggerThreshold = 800;
 const long outdoorIRSensorTriggerThreshold = 1000;
 const int irSensorPollInterval = 250;  // 1/4 second
 volatile bool indoorDetected = false;
@@ -137,7 +137,9 @@ long openPosition = 0;
 long closedPosition = initialClosedPosition;
 
 // Keep the door open for a period.
-const int keepOpenTime = 10000;  // 10 seconds 
+const int keepOpenTime = 10000;  // 10 seconds
+const int keepOpenTimerMaxResetsWaitingToOpen = 6;
+int keepOpenTimerResetCountWaitingToOpen = 0;
 
 // Keep in sync in ENUM for ease of logging
 const char* doorStatesCString[] = {"OPEN", "MOVING", "CLOSED", "KEEPOPEN", "KEEPCLOSED"};
@@ -249,7 +251,6 @@ void setup() {
     // Initial states
     switchISR();
     limitSwitchISR();
-    
     if (currentDoorState == STATE_CLOSED){
         // We're already closed at startup. Set open to be the inverse of the normal closed pos.
         openPosition = -initialClosedPosition;
@@ -391,6 +392,11 @@ void timerCallback() {
     desiredDoorState = getDesiredDoorState();
     if (currentDoorState != STATE_OPEN) {
         keepOpenTimer.changePeriodFromISR(keepOpenTime);
+        keepOpenTimerResetCountWaitingToOpen++;
+        if (keepOpenTimerResetCountWaitingToOpen > keepOpenTimerMaxResetsWaitingToOpen) {
+            runNonCriticalTasksNow = true;
+            systemResetRequested = true;
+        }
     }
 }
 
@@ -527,8 +533,11 @@ void checkStateChange() {
                     doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
                     doorStatesCString[currentDoorState], currentDoorState);
         if ( (enableMqtt) and (mqttClient.isConnected()) ) {
-            mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState], true);
+            mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState]);
             Log.info("MQTT Publish currentDoorState change");
+            if (publish) {
+                Particle.publish("mqtt publish . petdoor/state", String(doorStatesCString[currentDoorState]), PRIVATE);
+            }
         }
         currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
         lastCurrentDoorState = currentDoorState;
@@ -651,33 +660,40 @@ void setupParticleCloud() {
     if (!Particle.connected()) {
         Particle.connect();
         initialPublishComplete = false;
-    } else if (!initialPublishComplete) {
+    }
+    if (!initialPublishComplete) {
         Log.info("Connected publishing variables");
         particleCloudConnectedTimer.start();  // Connection watchdog.
         // Setup Particle cloud variables
-        Particle.variable("TopLimitSwitch", (int*)&topLimitSwitchStatus, INT);
-        Particle.variable("BottomLimitSwitch", (int*)&bottomLimitSwitchStatus, INT);
-        Particle.variable("KeepClosedSwitch", (int*)&keepClosedSwitchStatus, INT);
-        Particle.variable("KeepOpenSwitch", (int*)&keepOpenSwitchStatus, INT);
-        Particle.variable("ManualSwitch", (int*)&manualButtonSwitchStatus, INT);
-        Particle.variable("DesiredState", desiredDoorStateStatus);
-        Particle.variable("CurrentState", currentDoorStateStatus);
-        Particle.variable("IndoorSensor", (int*)&indoorSensorValue, INT);
-        Particle.variable("OutDoorSensor", (int*)&outdoorSensorValue, INT);
-        Particle.variable("overrideDoorState", overrideDoorState);
-        Particle.variable("overriddenDesiredState", overriddenDesiredDoorStateStatus);
-        Particle.variable("PerfProfiling", performanceProfiling);
-        Particle.variable("LoopDuration", duration);
-        Particle.variable("OpenDuration", openDuration);
-        Particle.variable("MTTConnected", mqttConnected);
+        bool pubv1 = Particle.variable("TopLimitSwitch", (int*)&topLimitSwitchStatus, INT);
+        bool pubv2 = Particle.variable("BottomLimitSwitch", (int*)&bottomLimitSwitchStatus, INT);
+        bool pubv3 = Particle.variable("KeepClosedSwitch", (int*)&keepClosedSwitchStatus, INT);
+        bool pubv4 = Particle.variable("KeepOpenSwitch", (int*)&keepOpenSwitchStatus, INT);
+        bool pubv5 = Particle.variable("ManualSwitch", (int*)&manualButtonSwitchStatus, INT);
+        bool pubv6 = Particle.variable("DesiredState", desiredDoorStateStatus);
+        bool pubv7 = Particle.variable("CurrentState", currentDoorStateStatus);
+        bool pubv8 = Particle.variable("IndoorSensor", (int*)&indoorSensorValue, INT);
+        bool pubv9 = Particle.variable("OutDoorSensor", (int*)&outdoorSensorValue, INT);
+        bool pubv10 = Particle.variable("overrideDoorState", overrideDoorState);
+        bool pubv11 = Particle.variable("overriddenDesiredState", overriddenDesiredDoorStateStatus);
+        bool pubv12 = Particle.variable("PerfProfiling", performanceProfiling);
+        bool pubv13 = Particle.variable("LoopDuration", duration);
+        bool pubv14 = Particle.variable("OpenDuration", openDuration);
+        bool pubv15 = Particle.variable("MTTConnected", mqttConnected);
+        bool publishVariablesSuccess = (pubv1 and pubv2 and pubv3 and pubv4 and pubv5 and pubv6 and pubv7 and pubv8
+                                        and pubv9 and pubv10 and pubv11 and pubv12 and pubv13 and pubv14 and pubv15);
 
         // Setup Particle cloud functions
-        Particle.function("setDesiredState", setDesiredState);
-        Particle.function("remoteCommand", remoteCommand);
-        Particle.function("PerfProfiling", profile);
+        bool pubf1 = Particle.function("setDesiredState", setDesiredState);
+        bool pubf2 = Particle.function("remoteCommand", remoteCommand);
+        bool pubf3 = Particle.function("PerfProfiling", profile);
+        bool publishFunctionsSuccess = (pubf1 and pubf2 and pubf3);
+
         // publish vitals on a timed interval
         Particle.publishVitals(vitalsPublishInterval);
-        initialPublishComplete = true;
+
+        initialPublishComplete = (publishVariablesSuccess and publishVariablesSuccess);
+        Particle.publish("initialPublishComplete", String(initialPublishComplete), PRIVATE);
     }
 }
 
@@ -690,13 +706,13 @@ void setupMqtt() {
     if (!mqttClient.isConnected()) {
         mqttConnected = false;
         mqttClient.connect("particle", mqttUser, mqttPassword);
-    } else if (!mqttConnected) {
+    } 
+    if (!mqttConnected) {
         Log.info("MQTT Connected!");
         bool pub1 = mqttClient.publish("homeassistant/cover/petdoor/availability", "online", true);
         bool pub2 = mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState], true);
         bool sub1 = mqttClient.subscribe("homeassistant/cover/petdoor/set");
-        bool sub2 = mqttClient.subscribe("homeassistant/cover/petdoor/state");
-        mqttConnected = (pub1 and pub2 and sub1 and sub2);  // All returned sucess
+        mqttConnected = (pub1 and pub2 and sub1);  // All returned sucess
     }
 }
 
@@ -707,7 +723,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     String message(p);
 
     if (strcasecmp(topic, "homeassistant/cover/petdoor/set")==0) {
-        Log.info("MQTT - Command Received: homeassistant/cover/petdoor/set");
+        Log.info("MQTT - Command Received: homeassistant/cover/petdoor/set", false);
         if (publish) {
             Particle.publish("mqtt command received. petdoor/set", message, PRIVATE);
         }
@@ -729,6 +745,9 @@ void loop() {
         // Otherwise we want to keep any many cycles free for running the stepper
         nonCriticalTasks();
         if (systemResetRequested) {
+            if (mqttConnected) {
+                mqttClient.publish("homeassistant/cover/petdoor/availability", "offline", true);
+            }
             delay(2000);  // Wait a couple of seconds to allow outstanding messages to be sent.
             System.reset();
         }
