@@ -24,8 +24,8 @@
 SYSTEM_THREAD(ENABLED);  // Have Particle processing in a separate thread - https://docs.particle.io/reference/device-os/firmware/photon/#system-thread
 SYSTEM_MODE(SEMI_AUTOMATIC);
 
-#include <AccelStepper.h>  // Include the AccelStepper library (AccelStepperSpark):
-#include <MQTT.h>  // Include MQTT Library for integration with HomeAssistant.io
+#include <AccelStepper.h>
+#include <MQTT.h>
 
 /**********************************************************************************************************************
  * Define GPIO Pins
@@ -53,16 +53,8 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 #define biLedIndoor A4
 #define biLedOutdoor A5
 
-/**********************************************************************************************************************
- * Global
- *********************************************************************************************************************/
-
-// TODO: Clean up ordering and grouping of vars. It's a bit of a mess.
-// TODO: Review var naming.
-// TODO: Review function names
-
 // Build
-const char version[] = "1.4.1";
+const char version[] = "1.4.2";
 const char buildDate[] = __DATE__ " " __TIME__;
 
 // MQTT
@@ -74,8 +66,7 @@ bool mqttConnected = false;
 
 // Performance profiling
 bool performanceProfiling = false;
-// For Main Loop
-uint32_t duration = 0;
+uint32_t duration = 0;  // For Main Loop
 // For Stepper motor time to open door
 uint32_t openDuration = 0;
 uint32_t openStart = 0;
@@ -108,8 +99,8 @@ const int periodicLogInterval = 60000;  //  1 minute
 
 // Flags
 volatile bool periodicLogNow = false;
-volatile bool checkStateNow = false;
-volatile bool checkSensorNow = false;
+volatile bool stateChanged = false;
+volatile bool sensorsChanged = false;
 volatile bool runNonCriticalTasksNow = true;  // Run soon after startup
 const int runNonCriticalTasksMaxInterval = 300000;  // 5 minutes
 
@@ -117,6 +108,8 @@ const int runNonCriticalTasksMaxInterval = 300000;  // 5 minutes
 const float stepperSpeed = 25000;
 const float stepperAccel = 25000;
 const long initialClosedPosition = 72000;
+long openPosition = 0;
+long closedPosition = initialClosedPosition;
 bool stepperPowerSave = false;
 bool openDoorInitialLoop = true;
 bool closeDoorInitialLoop = true;
@@ -131,10 +124,6 @@ volatile bool indoorDetected = false;
 volatile bool outdoorDetected = false;
 bool lastIndoorDetected = false;
 bool lastOutdoorDetected = false;
-
-// Limit end stop positions
-long openPosition = 0;
-long closedPosition = initialClosedPosition;
 
 // Keep the door open for a period.
 const int keepOpenTime = 10000;  // 10 seconds
@@ -180,28 +169,17 @@ enum inputs {
     INPUT_STEPPERENABLE = 7,
 };
 
-
-/**********************************************************************************************************************
- * Global Objects
- *********************************************************************************************************************/
-// Create serial Logging handler, set log level
-SerialLogHandler logHandler(LOG_LEVEL_INFO);
-// Application Watchdog
-ApplicationWatchdog wd(wdTimeout, System.reset);
-// Particle Publish connection watchdog
-Timer particleCloudConnectedTimer(checkConnectedInterval, checkParticleCloudConnection);
-// Ensure non-critical tasks run periodically
-Timer nonCriticalTaskTimer(runNonCriticalTasksMaxInterval, setRunNonCriticalTasksNow);
-// Create AccelStepper
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
-// Poll IR sensors
-Timer pollIRSensorsTimer(irSensorPollInterval, pollIRSensorISR);
-// Periodic Log message timer
-Timer periodicLogTimer(periodicLogInterval, setPeriodicLogNow);
-// Timer for how long the door is kept open after no presence detected.
-Timer keepOpenTimer(keepOpenTime, timerCallback, true);
-// MQTT Client
 MQTT mqttClient(mqttServer, 1883, mqttCallback);
+SerialLogHandler logHandler(LOG_LEVEL_INFO);
+
+ApplicationWatchdog wd(wdTimeout, System.reset);
+Timer periodicLogTimer(periodicLogInterval, periodicLogTimerCallBack);
+Timer particleCloudConnectedTimer(checkConnectedInterval, particleCloudConnectedTimerCallback);
+Timer nonCriticalTaskTimer(runNonCriticalTasksMaxInterval, nonCriticalTaskTimerCallback);
+Timer pollIRSensorsTimer(irSensorPollInterval, pollIRSensorsTimerCallback);
+Timer keepOpenTimer(keepOpenTime, keepOpenTimerCallback, true);
+
 
 /**********************************************************************************************************************
  * Setup
@@ -257,6 +235,48 @@ void setup() {
     }
 }
 
+
+/**********************************************************************************************************************
+ * Main Loop
+ *********************************************************************************************************************/
+void loop() {
+    uint32_t startTimeTicks;
+    if (performanceProfiling) {
+        startTimeTicks = System.ticks();
+    }
+    if ( (currentDoorState == desiredDoorState) or (runNonCriticalTasksNow) ) {
+        // Ok we're not needing to move the stepper so can do some other things in the loop. 
+        // Otherwise we want to keep any many cycles free for running the stepper
+        nonCriticalTasks();
+        if (systemResetRequested) {
+            if (mqttConnected) {
+                mqttClient.publish("homeassistant/cover/petdoor/availability", "offline", true);
+            }
+            delay(2000);  // Wait a couple of seconds to allow outstanding messages to be sent.
+            System.reset();
+        }
+    }
+
+    if ( (currentDoorState != STATE_MOVING) and (sensorsChanged) ){  // Only check if we're not already opening
+        checkForSensorChange();  // Check if sensors have detected something, if so log once.
+    }
+
+    if (stateChanged) {
+        checkForStateChange();  // Check if curent or desired states have changed
+    }
+
+    if ( (desiredDoorState == STATE_OPEN) or (desiredDoorState == STATE_KEEPOPEN) ) {
+        openDoor();
+    } else if ( (desiredDoorState == STATE_CLOSED) or (desiredDoorState == STATE_KEEPCLOSED) ) {
+        closeDoor();
+    } else {
+        Log.warn("Unexpected State - Desired: %d, Current: %d", desiredDoorState, currentDoorState);
+    }
+    if (performanceProfiling) {
+        uint32_t endTimeTicks = System.ticks();
+        duration = (endTimeTicks-startTimeTicks)/System.ticksPerMicrosecond();
+    }
+}
 
 /**********************************************************************************************************************
  * Status LED Controls
@@ -382,10 +402,26 @@ doorStates getDesiredDoorState() {
 
 
 /**********************************************************************************************************************
- * Interrupt Service Routines
+ * GPIO - ISR
  *********************************************************************************************************************/
-void timerCallback() {
-    Log.trace("timerCallback - Timer expired");
+void limitSwitchISR() {
+    readLimitSwitchValues();
+    currentDoorState = getCurrentDoorState();
+    stateChanged = true;  // Since ISR called, something has changed
+}
+
+void switchISR() {
+    readSwitchValues();
+    desiredDoorState = getDesiredDoorState();
+    stateChanged = true;  // Since ISR called, something has changed
+}
+
+
+/**********************************************************************************************************************
+ * Timer Callback (ISR)
+ *********************************************************************************************************************/
+void keepOpenTimerCallback() {
+    Log.trace("keepOpenTimerCallback - Timer expired");
     if (overriddenDesiredDoorState == STATE_OPEN) {  // Clear the override on timeout.
         overrideDoorState = false;
     }
@@ -400,49 +436,37 @@ void timerCallback() {
     }
 }
 
-void limitSwitchISR() {
-    readLimitSwitchValues();
-    currentDoorState = getCurrentDoorState();
-    checkStateNow = true;  // Since ISR called, something has changed
+void periodicLogTimerCallBack() {
+    periodicLogNow = true;
 }
 
-void switchISR() {
-    readSwitchValues();
-    desiredDoorState = getDesiredDoorState();
-    checkStateNow = true;  // Since ISR called, something has changed
-}
-
-void pollIRSensorISR() {
+void pollIRSensorsTimerCallback() {
     bool initialIndoor = indoorDetected;
     bool initialOutdoor = outdoorDetected; 
     indoorDetected = indoorPresenceDetected();
     outdoorDetected = outdoorPresenceDetected();
     if ( (initialIndoor != indoorDetected) or (initialOutdoor != outdoorDetected) ){
-        checkSensorNow = true;  // Trigger only on change
+        sensorsChanged = true;  // Trigger only on change
     }
     doorStates initialState = desiredDoorState;
     desiredDoorState = getDesiredDoorState();
     if (initialState != desiredDoorState) {
-        checkStateNow = true;  // Trigger only on change
+        stateChanged = true;  // Trigger only on change
     }
 }
 
-void setPeriodicLogNow() {
-    periodicLogNow = true;
-}
-
-void checkParticleCloudConnection() {
+void particleCloudConnectedTimerCallback() {
     if (!Particle.connected) {
         System.reset();
     }
 }
 
-void setRunNonCriticalTasksNow() {
+void nonCriticalTaskTimerCallback() {
     runNonCriticalTasksNow = true;
 }
 
 /**********************************************************************************************************************
- * Stepper Actions
+ * Stepper Control
  *********************************************************************************************************************/
 void stopStepper() {
     // Set the stepper to think it's already reached the closed position.
@@ -512,8 +536,8 @@ void closeDoor() {
 /**********************************************************************************************************************
  * Check for state changes
  *********************************************************************************************************************/
-void checkStateChange() {
-    checkStateNow = false;
+void checkForStateChange() {
+    stateChanged = false;
     // Check for desiredDoorState changes - Log once
     if (desiredDoorState != lastDesiredDoorState) {
         Log.info("DESIRED STATE CHANGED FROM: %s [%d] to %s [%d]",
@@ -563,8 +587,8 @@ void periodicLog() {
               keepOpenSwitchStatus, keepClosedSwitchStatus, topLimitSwitchStatus, bottomLimitSwitchStatus);
 }
 
-void checkSensorChange() {
-    checkSensorNow = false;
+void checkForSensorChange() {
+    sensorsChanged = false;
     // Check indoorDetected change - Log once 
     if (indoorDetected != lastIndoorDetected) {
         if (indoorDetected) {
@@ -701,7 +725,6 @@ void setupParticleCloud() {
 /**********************************************************************************************************************
  * MQTT
  *********************************************************************************************************************/
-// recieve message
 void setupMqtt() {
     if (!mqttClient.isConnected()) {
         mqttConnected = false;
@@ -728,48 +751,5 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             Particle.publish("mqtt command received. petdoor/set", message, PRIVATE);
         }
         setDesiredState(message);  // Use existing Particle Cloud Function to process command
-    }
-}
-
-
-/**********************************************************************************************************************
- * Main Loop
- *********************************************************************************************************************/
-void loop() {
-    uint32_t start;
-    if (performanceProfiling) {
-        start = System.ticks();
-    }
-    if ( (currentDoorState == desiredDoorState) or (runNonCriticalTasksNow) ) {
-        // Ok we're not needing to move the stepper so can do some other things in the loop. 
-        // Otherwise we want to keep any many cycles free for running the stepper
-        nonCriticalTasks();
-        if (systemResetRequested) {
-            if (mqttConnected) {
-                mqttClient.publish("homeassistant/cover/petdoor/availability", "offline", true);
-            }
-            delay(2000);  // Wait a couple of seconds to allow outstanding messages to be sent.
-            System.reset();
-        }
-    }
-
-    if ( (currentDoorState != STATE_MOVING) and (checkSensorNow) ){  // Only check if we're not already opening
-        checkSensorChange();  // Check if sensors have detected something, if so log once.
-    }
-
-    if (checkStateNow) {
-        checkStateChange();  // Check if curent or desired states have changed
-    }
-
-    if ( (desiredDoorState == STATE_OPEN) or (desiredDoorState == STATE_KEEPOPEN) ) {
-        openDoor();
-    } else if ( (desiredDoorState == STATE_CLOSED) or (desiredDoorState == STATE_KEEPCLOSED) ) {
-        closeDoor();
-    } else {
-        Log.warn("Unexpected State - Desired: %d, Current: %d", desiredDoorState, currentDoorState);
-    }
-    if (performanceProfiling) {
-        uint32_t end = System.ticks();
-        duration = (end-start)/System.ticksPerMicrosecond();
     }
 }
