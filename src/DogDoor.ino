@@ -140,6 +140,16 @@ enum doorStates {
     STATE_KEEPOPEN = 3,
     STATE_KEEPCLOSED = 4,
 };
+// Keep in sync in ENUM for ease of mqtt publishing
+const char* mqttStatesCString[] = {"open", "opening", "closed", "closing"};
+// Enum for states
+enum mqttStates {
+    MQTT_OPEN = 0,
+    MQTT_OPENING = 1,
+    MQTT_CLOSED = 2,
+    MQTT_CLOSING = 3
+};
+
 volatile enum doorStates desiredDoorState = STATE_CLOSED;
 volatile enum doorStates currentDoorState;
 enum doorStates lastDesiredDoorState;
@@ -148,6 +158,8 @@ enum doorStates lastCurrentDoorState;
 // Cloud Function Variables
 bool overrideDoorState = false;
 enum doorStates overriddenDesiredDoorState;
+
+enum mqttStates mqttState;
 
 // Enum for LED status
 enum ledStatus {
@@ -557,10 +569,10 @@ void checkForStateChange() {
                     doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
                     doorStatesCString[currentDoorState], currentDoorState);
         if ( (enableMqtt) and (mqttClient.isConnected()) ) {
-            mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState]);
+            mqttClient.publish("homeassistant/cover/petdoor/state", mqttStatesCString[doorStateToMqttState()]);
             Log.info("MQTT Publish currentDoorState change");
             if (publish) {
-                Particle.publish("mqtt publish . petdoor/state", String(doorStatesCString[currentDoorState]), PRIVATE);
+                Particle.publish("mqtt publish . petdoor/state", String(mqttStatesCString[doorStateToMqttState()]), PRIVATE);
             }
         }
         currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
@@ -733,9 +745,23 @@ void setupMqtt() {
     if (!mqttConnected) {
         Log.info("MQTT Connected!");
         bool pub1 = mqttClient.publish("homeassistant/cover/petdoor/availability", "online", true);
-        bool pub2 = mqttClient.publish("homeassistant/cover/petdoor/state", doorStatesCString[currentDoorState], true);
+        bool pub2 = mqttClient.publish("homeassistant/cover/petdoor/state", mqttStatesCString[doorStateToMqttState()], true);
         bool sub1 = mqttClient.subscribe("homeassistant/cover/petdoor/set");
-        mqttConnected = (pub1 and pub2 and sub1);  // All returned sucess
+        mqttConnected = (pub1 and pub2);  // All returned sucess
+    }
+}
+
+int doorStateToMqttState() {
+    if (currentDoorState == STATE_MOVING) {
+         if (desiredDoorState == STATE_OPEN) {
+             return MQTT_OPENING;
+         } else {
+             return MQTT_CLOSING;
+         }
+    } else if ((currentDoorState == STATE_OPEN) or (currentDoorState == STATE_KEEPOPEN)) {
+        return MQTT_OPEN;
+    } else if ((currentDoorState == STATE_CLOSED) or (currentDoorState == STATE_KEEPCLOSED)) {
+        return MQTT_CLOSED;
     }
 }
 
@@ -747,9 +773,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
     if (strcasecmp(topic, "homeassistant/cover/petdoor/set")==0) {
         Log.info("MQTT - Command Received: homeassistant/cover/petdoor/set", false);
-        if (publish) {
-            Particle.publish("mqtt command received. petdoor/set", message, PRIVATE);
-        }
-        setDesiredState(message);  // Use existing Particle Cloud Function to process command
+        // if (publish) {
+        //     Particle.publish("mqtt command received. petdoor/set", message, PRIVATE);
+        // }
+        // setDesiredState(message);  // Use existing Particle Cloud Function to process command
     }
 }
