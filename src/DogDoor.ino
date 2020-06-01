@@ -54,7 +54,7 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 #define biLedOutdoor A5
 
 // Build
-const char version[] = "1.4.2";
+const char version[] = "1.4.3";
 const char buildDate[] = __DATE__ " " __TIME__;
 
 // MQTT
@@ -264,6 +264,7 @@ void loop() {
             if (mqttConnected) {
                 mqttClient.publish("homeassistant/cover/petdoor/availability", "offline", true);
             }
+            Log.warn("System Reset Requested");
             delay(2000);  // Wait a couple of seconds to allow outstanding messages to be sent.
             System.reset();
         }
@@ -384,6 +385,9 @@ doorStates getCurrentDoorState() {
 
 doorStates getDesiredDoorState() {
     if (overrideDoorState){
+        // Set both LEDS to red
+        setStatusLed1(LED_KEEPCLOSED);
+        setStatusLed2(LED_INDOOR);
         return overriddenDesiredDoorState;
     } else if (keepClosedSwitchStatus) {
         setStatusLed1(LED_KEEPCLOSED);
@@ -438,12 +442,13 @@ void keepOpenTimerCallback() {
         overrideDoorState = false;
     }
     desiredDoorState = getDesiredDoorState();
-    if (currentDoorState != STATE_OPEN) {
+    if  ( (currentDoorState != STATE_OPEN) and (desiredDoorState != STATE_KEEPCLOSED) ) {
         keepOpenTimer.changePeriodFromISR(keepOpenTime);
         keepOpenTimerResetCountWaitingToOpen++;
         if (keepOpenTimerResetCountWaitingToOpen > keepOpenTimerMaxResetsWaitingToOpen) {
             runNonCriticalTasksNow = true;
             systemResetRequested = true;
+            // Log.warn("keepOpenTimerCallback - Reset Requested");
         }
     }
 }
@@ -469,6 +474,7 @@ void pollIRSensorsTimerCallback() {
 
 void particleCloudConnectedTimerCallback() {
     if (!Particle.connected) {
+        Log.error("particleCloudConnectedTimerCallback - System Reset");
         System.reset();
     }
 }
@@ -676,6 +682,9 @@ int remoteCommand(String command) {
     if (strcasecmp(command.c_str(), "reset")==0) {
         Particle.publish("remoteCommand", "reset", PRIVATE);
         systemResetRequested = true;
+        return 1;
+    } else if (strcasecmp(command.c_str(), "log")==0) {
+        periodicLog();
         return 1;
     }
     return 0;
