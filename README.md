@@ -52,4 +52,4 @@ If the desired state of the door is Open, then the motors will run until the top
 
 ## Breadboard Diagram
 
-![Breadboard Diagram](src/DogDoor_bb.png)
+![Breadboard Diagram](DogDoor_bb.png)
