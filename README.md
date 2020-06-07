@@ -4,8 +4,6 @@ This project is a work in progress, aiming to provided an automated door for our
 
 With the Particle Photons built in WiFi, I plan to integrate in the monitoring of the door with existing Home Automation.
 
-*TODO - Add Frizting Diagram*
-
 ## Connectivity
 
 The status of the various switches, sensors and other internal variables are exposed via Particle Cloud. This also provides some basic over-ride capabilities, including a remote reset.
@@ -51,3 +49,7 @@ If the desired state of the door is Open, then the motors will run until the top
   * Toggle switch (on-off-on)
   * Push button
   * Various wires and connectors
+
+## Breadboard Diagram
+
+![Breadboard Diagram](src/DogDoor_bb.png)
