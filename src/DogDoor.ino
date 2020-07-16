@@ -670,7 +670,7 @@ int setDesiredState(String requestedState) {
     } else {
         Log.warn("setDesiredState received invalid requestedState value: %s", requestedState.c_str());
         Particle.publish("setDesiredState-error", requestedState, PRIVATE);
-        overriddenDesiredDoorStateStatus = String::format("%s", doorStatesCString[overrideDoorState]);
+        overriddenDesiredDoorStateStatus = String::format("%s", doorStatesCString[overriddenDesiredDoorState]);
         return 0;
     }
     Particle.publish("setDesiredState-success", requestedState, PRIVATE); 
