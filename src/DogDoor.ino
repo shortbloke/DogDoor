@@ -52,7 +52,7 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 #define biLedOutdoor A5
 
 // Build
-const char version[] = "1.5.1";
+const char version[] = "1.6.0";
 const char buildDate[] = __DATE__ " " __TIME__;
 
 // Performance profiling
@@ -83,7 +83,6 @@ String overriddenDesiredDoorStateStatus = "";
 bool initialPublishComplete = false;
 const bool publish = true;
 const int vitalsPublishInterval = 300;     // 5 minutes
-const int checkConnectedInterval = 600000; // 10 minutes
 bool systemResetRequested = false;
 
 // Periodic Serial Logging
@@ -170,7 +169,6 @@ SerialLogHandler logHandler(LOG_LEVEL_INFO);
 
 // ApplicationWatchdog wd(wdTimeout, System.reset);
 Timer periodicLogTimer(periodicLogInterval, periodicLogTimerCallBack);
-Timer particleCloudConnectedTimer(checkConnectedInterval, particleCloudConnectedTimerCallback);
 Timer nonCriticalTaskTimer(runNonCriticalTasksMaxInterval, nonCriticalTaskTimerCallback);
 Timer pollIRSensorsTimer(irSensorPollInterval, pollIRSensorsTimerCallback);
 Timer keepOpenTimer(keepOpenTime, keepOpenTimerCallback, true);
@@ -230,6 +228,45 @@ void setup()
         // We're already closed at startup. Set open to be the inverse of the normal closed pos.
         openPosition = -initialClosedPosition;
     }
+
+    if (publish)
+    {
+        setupParticleCloud();
+    }
+}
+
+void setupParticleCloud()
+{
+    Log.info("Creating Particle variables");
+    // Setup Particle cloud variables
+    bool pubv1 = Particle.variable("TopLimitSwitch", (int *)&topLimitSwitchStatus, INT);
+    bool pubv2 = Particle.variable("BottomLimitSwitch", (int *)&bottomLimitSwitchStatus, INT);
+    bool pubv3 = Particle.variable("KeepClosedSwitch", (int *)&keepClosedSwitchStatus, INT);
+    bool pubv4 = Particle.variable("KeepOpenSwitch", (int *)&keepOpenSwitchStatus, INT);
+    bool pubv5 = Particle.variable("ManualSwitch", (int *)&manualButtonSwitchStatus, INT);
+    bool pubv6 = Particle.variable("DesiredState", desiredDoorStateStatus);
+    bool pubv7 = Particle.variable("CurrentState", currentDoorStateStatus);
+    bool pubv8 = Particle.variable("IndoorSensor", (int *)&indoorSensorValue, INT);
+    bool pubv9 = Particle.variable("OutDoorSensor", (int *)&outdoorSensorValue, INT);
+    bool pubv10 = Particle.variable("overrideDoorState", overrideDoorState);
+    bool pubv11 = Particle.variable("overriddenDesiredState", overriddenDesiredDoorStateStatus);
+    bool pubv12 = Particle.variable("PerfProfiling", performanceProfiling);
+    bool pubv13 = Particle.variable("LoopDuration", duration);
+    bool pubv14 = Particle.variable("OpenDuration", openDuration);
+    bool pubv15 = Particle.variable("ResetReason", reason);
+    bool pubv16 = Particle.variable("openPosition", (int *)&openPosition, INT);
+    bool pubv17 = Particle.variable("closedPosition", (int *)&closedPosition, INT);
+    bool publishVariablesSuccess = (pubv1 and pubv2 and pubv3 and pubv4 and pubv5 and pubv6 and pubv7 and pubv8 and pubv9 and pubv10 and pubv11 and pubv12 and pubv13 and pubv14 and pubv15 and pubv16 and pubv17);
+
+    // Setup Particle cloud functions
+    bool pubf1 = Particle.function("setDesiredState", setDesiredState);
+    bool pubf2 = Particle.function("remoteCommand", remoteCommand);
+    bool pubf3 = Particle.function("PerfProfiling", profile);
+    bool publishFunctionsSuccess = (pubf1 and pubf2 and pubf3);
+    Log.info("Publishing Particle variables and functions: %s", ((publishVariablesSuccess and publishFunctionsSuccess) ? "TRUE" : "FALSE"));
+
+    Log.info("Connecting to Particle Cloud");
+    Particle.connect();
 }
 
 /**********************************************************************************************************************
@@ -237,7 +274,7 @@ void setup()
  *********************************************************************************************************************/
 void loop()
 {
-    uint32_t startTimeTicks;
+    uint32_t startTimeTicks = 0;
     if (performanceProfiling)
     {
         startTimeTicks = System.ticks();
@@ -498,15 +535,6 @@ void pollIRSensorsTimerCallback()
     }
 }
 
-void particleCloudConnectedTimerCallback()
-{
-    if (!Particle.connected)
-    {
-        Log.error("particleCloudConnectedTimerCallback - System Reset");
-        System.reset();
-    }
-}
-
 void nonCriticalTaskTimerCallback()
 {
     runNonCriticalTasksNow = true;
@@ -643,16 +671,20 @@ void periodicLog()
     periodicLogNow = false; // Reset, will be enabled by Timer ISR
     Log.info("Device: %s", deviceString.c_str());
     Log.info("App Version: %s", buildString.c_str());
-    Log.info("Free Memory (B): %d", System.freeMemory());
+    Log.info("Free Memory (B): %lu", System.freeMemory());
     Log.info("Uptime (mins): %d", (int)(System.uptime() / 60));
     Log.info("System restart reason: %d - %d - %s", resetReasonCode, resetReasonData, reason.c_str());
     Log.info("Current State: %s [%d] - Desired State: %s [%d]",
              doorStatesCString[currentDoorState], currentDoorState,
              doorStatesCString[desiredDoorState], desiredDoorState);
-    Log.info("Indoor: %d - Outdoor: %d - Button: %d",
+    Log.info("Indoor: %lu - Outdoor: %lu - Button: %d",
              indoorSensorValue, outdoorSensorValue, manualButtonSwitchStatus);
     Log.info("KeepOpen: %d - KeepClosed: %d - Top: %d - Bottom: %d",
              keepOpenSwitchStatus, keepClosedSwitchStatus, topLimitSwitchStatus, bottomLimitSwitchStatus);
+    if (publish)
+    {
+        Particle.publishVitals(vitalsPublishInterval);
+    }
 }
 
 void resetReason(void)
@@ -712,11 +744,11 @@ void checkForSensorChange()
     {
         if (indoorDetected)
         {
-            Log.info("MOTION DETECTED INDOOR: %d", indoorSensorValue);
+            Log.info("MOTION DETECTED INDOOR: %lu", indoorSensorValue);
             if (publish)
             {
                 Particle.publish("INDOOR-MOTION-DETECTED",
-                                 String::format("%d", indoorSensorValue),
+                                 String::format("%lu", indoorSensorValue),
                                  PRIVATE);
             }
         }
@@ -727,11 +759,11 @@ void checkForSensorChange()
     {
         if (outdoorDetected)
         {
-            Log.info("MOTION DETECTED OUTDOOR: %d", outdoorSensorValue);
+            Log.info("MOTION DETECTED OUTDOOR: %lu", outdoorSensorValue);
             if (publish)
             {
                 Particle.publish("OUTDOOR-MOTION-DETECTED",
-                                 String::format("%d", outdoorSensorValue),
+                                 String::format("%lu", outdoorSensorValue),
                                  PRIVATE);
             }
         }
@@ -743,10 +775,6 @@ void nonCriticalTasks()
 {
     runNonCriticalTasksNow = false;
     nonCriticalTaskTimer.changePeriod(runNonCriticalTasksMaxInterval);
-    if (publish)
-    {
-        setupParticleCloud(); // Connect to Particle Cloud and publish variables and functions
-    }
     if (periodicLogNow)
     {
         periodicLog(); // Log to serial port
@@ -819,49 +847,4 @@ int profile(String command)
         return 1;
     }
     return 0;
-}
-
-void setupParticleCloud()
-{
-    if (!Particle.connected())
-    {
-        Particle.connect();
-        initialPublishComplete = false;
-    }
-    if (!initialPublishComplete)
-    {
-        Log.info("Connected publishing variables");
-        particleCloudConnectedTimer.start(); // Connection watchdog.
-        // Setup Particle cloud variables
-        bool pubv1 = Particle.variable("TopLimitSwitch", (int *)&topLimitSwitchStatus, INT);
-        bool pubv2 = Particle.variable("BottomLimitSwitch", (int *)&bottomLimitSwitchStatus, INT);
-        bool pubv3 = Particle.variable("KeepClosedSwitch", (int *)&keepClosedSwitchStatus, INT);
-        bool pubv4 = Particle.variable("KeepOpenSwitch", (int *)&keepOpenSwitchStatus, INT);
-        bool pubv5 = Particle.variable("ManualSwitch", (int *)&manualButtonSwitchStatus, INT);
-        bool pubv6 = Particle.variable("DesiredState", desiredDoorStateStatus);
-        bool pubv7 = Particle.variable("CurrentState", currentDoorStateStatus);
-        bool pubv8 = Particle.variable("IndoorSensor", (int *)&indoorSensorValue, INT);
-        bool pubv9 = Particle.variable("OutDoorSensor", (int *)&outdoorSensorValue, INT);
-        bool pubv10 = Particle.variable("overrideDoorState", overrideDoorState);
-        bool pubv11 = Particle.variable("overriddenDesiredState", overriddenDesiredDoorStateStatus);
-        bool pubv12 = Particle.variable("PerfProfiling", performanceProfiling);
-        bool pubv13 = Particle.variable("LoopDuration", duration);
-        bool pubv14 = Particle.variable("OpenDuration", openDuration);
-        bool pubv15 = Particle.variable("ResetReason", reason);
-        bool pubv16 = Particle.variable("openPosition", (int *)&openPosition, INT);
-        bool pubv17 = Particle.variable("closedPosition", (int *)&closedPosition, INT);
-        bool publishVariablesSuccess = (pubv1 and pubv2 and pubv3 and pubv4 and pubv5 and pubv6 and pubv7 and pubv8 and pubv9 and pubv10 and pubv11 and pubv12 and pubv13 and pubv14 and pubv15 and pubv16 and pubv17);
-
-        // Setup Particle cloud functions
-        bool pubf1 = Particle.function("setDesiredState", setDesiredState);
-        bool pubf2 = Particle.function("remoteCommand", remoteCommand);
-        bool pubf3 = Particle.function("PerfProfiling", profile);
-        bool publishFunctionsSuccess = (pubf1 and pubf2 and pubf3);
-
-        // publish vitals on a timed interval
-        Particle.publishVitals(vitalsPublishInterval);
-
-        initialPublishComplete = (publishVariablesSuccess and publishVariablesSuccess);
-        Particle.publish("initialPublishComplete", String(initialPublishComplete), PRIVATE);
-    }
 }
