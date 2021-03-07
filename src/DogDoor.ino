@@ -99,7 +99,7 @@ const int runNonCriticalTasksMaxInterval = 300000; // 5 minutes
 // Stepper (MicroStepping 1/32)
 const float stepperSpeed = 50000;
 const float stepperAccel = 50000;
-const long initialClosedPosition = 72000;
+const long initialClosedPosition = 72600;
 long openPosition = 0;
 long closedPosition = initialClosedPosition;
 bool stepperPowerSave = false;
@@ -118,7 +118,7 @@ bool lastIndoorDetected = false;
 bool lastOutdoorDetected = false;
 
 // Keep the door open for a period.
-const int keepOpenTime = 1000; // 1 second
+const int keepOpenTime = 2000; // 2 seconds
 const int keepOpenTimerMaxResetsWaitingToOpen = 60;
 int keepOpenTimerResetCountWaitingToOpen = 0;
 
@@ -168,7 +168,7 @@ enum inputs
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
 
-ApplicationWatchdog wd(wdTimeout, System.reset);
+// ApplicationWatchdog wd(wdTimeout, System.reset);
 Timer periodicLogTimer(periodicLogInterval, periodicLogTimerCallBack);
 Timer particleCloudConnectedTimer(checkConnectedInterval, particleCloudConnectedTimerCallback);
 Timer nonCriticalTaskTimer(runNonCriticalTasksMaxInterval, nonCriticalTaskTimerCallback);
@@ -250,6 +250,8 @@ void loop()
         if (systemResetRequested)
         {
             Log.warn("System Reset Requested");
+            Particle.publish("SystemResetRequested");
+            
             delay(2000); // Wait a couple of seconds to allow outstanding messages to be sent.
             System.reset();
         }
@@ -539,7 +541,8 @@ void openDoor()
         {
             // Move completed, but we're not there yet. Move more.
             Log.warn("Opening - Homing");
-            openPosition = openPosition - initialClosedPosition;
+            Particle.publish("Opening Homing",String::format("%d", openPosition), PRIVATE);
+            openPosition -= 50000;
             stepper.moveTo(openPosition);
         }
         stepper.run();
@@ -553,8 +556,8 @@ void openDoor()
             openStart = 0;
         }
         // Door Open
-        // openPosition = 0;  // Set Zero position
-        openPosition = -10000;         // Remove decleration on open.
+        openPosition = 0;  // Set Zero position
+        // openPosition = -10000;         // Remove decleration on open.
         stepper.setCurrentPosition(0); // Set or reset stepper home position
         openDoorInitialLoop = true;    // reset flag
     }
@@ -608,6 +611,8 @@ void checkForStateChange()
         Log.info("DESIRED STATE CHANGED FROM: %s [%d] to %s [%d]",
                  doorStatesCString[lastDesiredDoorState], lastDesiredDoorState,
                  doorStatesCString[desiredDoorState], desiredDoorState);
+        Particle.publish("DesiredDoorState", doorStatesCString[desiredDoorState]);
+        Particle.publish("LastDesiredDoorState", doorStatesCString[lastDesiredDoorState]);
         desiredDoorStateStatus = String::format("%s", doorStatesCString[desiredDoorState]);
         if ((lastDesiredDoorState == STATE_CLOSED) and (desiredDoorState != STATE_KEEPCLOSED))
         {
@@ -623,6 +628,8 @@ void checkForStateChange()
         Log.info("CURRENT STATE CHANGED FROM: %s [%d] to %s [%d]",
                  doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
                  doorStatesCString[currentDoorState], currentDoorState);
+        Particle.publish("currentDoorState", doorStatesCString[currentDoorState]);
+        Particle.publish("LastCurrentDoorState", doorStatesCString[lastCurrentDoorState]);
         currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
         lastCurrentDoorState = currentDoorState;
     }
@@ -841,7 +848,9 @@ void setupParticleCloud()
         bool pubv13 = Particle.variable("LoopDuration", duration);
         bool pubv14 = Particle.variable("OpenDuration", openDuration);
         bool pubv15 = Particle.variable("ResetReason", reason);
-        bool publishVariablesSuccess = (pubv1 and pubv2 and pubv3 and pubv4 and pubv5 and pubv6 and pubv7 and pubv8 and pubv9 and pubv10 and pubv11 and pubv12 and pubv13 and pubv14 and pubv15);
+        bool pubv16 = Particle.variable("openPosition", (int *)&openPosition, INT);
+        bool pubv17 = Particle.variable("closedPosition", (int *)&closedPosition, INT);
+        bool publishVariablesSuccess = (pubv1 and pubv2 and pubv3 and pubv4 and pubv5 and pubv6 and pubv7 and pubv8 and pubv9 and pubv10 and pubv11 and pubv12 and pubv13 and pubv14 and pubv15 and pubv16 and pubv17);
 
         // Setup Particle cloud functions
         bool pubf1 = Particle.function("setDesiredState", setDesiredState);
