@@ -8,12 +8,15 @@ With the Particle Photons built in WiFi, I plan to integrate in the monitoring o
 
 The status of the various switches, sensors and other internal variables are exposed via Particle Cloud. This also provides some basic over-ride capabilities, including a remote reset.
 
-MQTT support has also been added to report state back to an MQTT Broker. The device also accepts some basic commands via MQTT, for example to open the door. This has been tested with HomeAssistant.io.
+MQTT support has also been added to report state back to an MQTT Broker. This has been tested with HomeAssistant.io.
+
+*Note: I had hoped to be able to handle MQTT SET commands, however testing showed that upon connecting to the MQTT broker, it would response with a SET command which would trigger the door to open. So this functionality is disabled for now.*
 
 ## Potential TODO List
 
 * Experiment with ISO11784 134.2K RFID Module to read RFID tags in our pets. As an alternative to using the infrared sensor outside.
 * Investigate locking mechanisms, solenoid?
+* Address issue with MQTT set commands.
 
 ## Operation
 
@@ -25,7 +28,7 @@ If the desired state of the door is Open, then the motors will run until the top
 
 * Structure:
   * 2040 and 2020 Aluminium extrusion attached to plywood backing board
-  * Various Aluminium pieces and fixings. 
+  * Various Aluminium pieces and fixings.
 * Door:
   * A2 (594 x 420mm) 5mm thick clear Perspex sheet, using slot in Aluminium as a guide.
   * A2 (594 x 420mm) 5mm PVC Foamex board, trimmed slightly narrower, sitting in front on the clear Perspex for a little added insulation.
