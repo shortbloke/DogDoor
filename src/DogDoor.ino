@@ -8,6 +8,7 @@
  *                - 2 x NEMA17 Stepper motors via TB6600 Stepper controller, set to 1/32 micro-stepping
  *                - AccelStepper library provides acceleration function to stepper controller
  *                - State information accessible via Particle.io cloud
+ *                - Events published via MQTT for HomeAssistant Integration
  *                - Override control and system commands via Particle.io cloud
  *
  *              In order for stepper to run as quickly and smoothly as possible, time outside the loop needs to be
@@ -24,6 +25,7 @@ SYSTEM_THREAD(ENABLED); // Have Particle processing in a separate thread - https
 SYSTEM_MODE(SEMI_AUTOMATIC);
 
 #include <AccelStepper.h>
+#include <MQTT.h>
 
 /**********************************************************************************************************************
  * Define GPIO Pins
@@ -52,8 +54,20 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 #define biLedOutdoor A5
 
 // Build
-const char version[] = "1.6.0";
+const char version[] = "1.7.0";
 const char buildDate[] = __DATE__ " " __TIME__;
+
+// MQTT
+byte mqttServer[] = {192, 168, 200, 45};
+const char *mqttUser = "username";
+const char *mqttPassword = "password";
+const char *mqttClientName = "particle";
+const char *mqttAvailabilityTopic = "homeassistant/cover/petdoor/availability";
+const char *mqttStateTopic = "homeassistant/cover/petdoor/state";
+const char *mqttSetTopic = "homeassistant/cover/petdoor/set";
+const bool enableMqtt = true;
+long mqttLastReconnectAttempt = 0;
+int mqttReconnectIntveral = 10000; // 10 Seconds
 
 // Performance profiling
 bool performanceProfiling = false;
@@ -82,7 +96,7 @@ String currentDoorStateStatus = "";
 String overriddenDesiredDoorStateStatus = "";
 bool initialPublishComplete = false;
 const bool publish = true;
-const int vitalsPublishInterval = 300;     // 5 minutes
+const int vitalsPublishInterval = 300; // 5 minutes
 bool systemResetRequested = false;
 
 // Periodic Serial Logging
@@ -133,6 +147,17 @@ enum doorStates
     STATE_KEEPCLOSED = 4,
 };
 
+// Keep in sync in ENUM for ease of mqtt publishing
+const char *mqttStatesCString[] = {"open", "opening", "closed", "closing"};
+// Enum for states
+enum mqttStates
+{
+    MQTT_OPEN = 0,
+    MQTT_OPENING = 1,
+    MQTT_CLOSED = 2,
+    MQTT_CLOSING = 3
+};
+
 volatile enum doorStates desiredDoorState = STATE_CLOSED;
 volatile enum doorStates currentDoorState;
 enum doorStates lastDesiredDoorState;
@@ -141,6 +166,8 @@ enum doorStates lastCurrentDoorState;
 // Cloud Function Variables
 bool overrideDoorState = false;
 enum doorStates overriddenDesiredDoorState;
+
+enum mqttStates mqttState;
 
 // Enum for LED status
 enum ledStatus
@@ -166,6 +193,7 @@ enum inputs
 
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
+MQTT mqttClient(mqttServer, 1883, mqttCallback);
 
 // ApplicationWatchdog wd(wdTimeout, System.reset);
 Timer periodicLogTimer(periodicLogInterval, periodicLogTimerCallBack);
@@ -235,6 +263,9 @@ void setup()
     }
 }
 
+/**********************************************************************************************************************
+ * MQTT
+ *********************************************************************************************************************/
 void setupParticleCloud()
 {
     Log.info("Creating Particle variables");
@@ -283,12 +314,16 @@ void loop()
     {
         // Ok we're not needing to move the stepper so can do some other things in the loop.
         // Otherwise we want to keep any many cycles free for running the stepper
-        nonCriticalTasks();
+        nonCriticalTasks(millis());
         if (systemResetRequested)
         {
+            if (mqttClient.isConnected())
+            {
+                mqttClient.publish(mqttAvailabilityTopic, "offline", false);
+            }
             Log.warn("System Reset Requested");
             Particle.publish("SystemResetRequested");
-            
+
             delay(2000); // Wait a couple of seconds to allow outstanding messages to be sent.
             System.reset();
         }
@@ -569,7 +604,6 @@ void openDoor()
         {
             // Move completed, but we're not there yet. Move more.
             Log.warn("Opening - Homing");
-            Particle.publish("Opening Homing",String::format("%d", openPosition), PRIVATE);
             openPosition -= 50000;
             stepper.moveTo(openPosition);
         }
@@ -584,7 +618,7 @@ void openDoor()
             openStart = 0;
         }
         // Door Open
-        openPosition = 0;  // Set Zero position
+        openPosition = 0; // Set Zero position
         // openPosition = -10000;         // Remove decleration on open.
         stepper.setCurrentPosition(0); // Set or reset stepper home position
         openDoorInitialLoop = true;    // reset flag
@@ -658,6 +692,15 @@ void checkForStateChange()
                  doorStatesCString[currentDoorState], currentDoorState);
         Particle.publish("currentDoorState", doorStatesCString[currentDoorState]);
         Particle.publish("LastCurrentDoorState", doorStatesCString[lastCurrentDoorState]);
+        if ((enableMqtt) and (mqttClient.isConnected()))
+        {
+            mqttClient.publish(mqttStateTopic, mqttStatesCString[doorStateToMqttState()]);
+            Log.info("MQTT Publish currentDoorState change");
+            if (publish)
+            {
+                Particle.publish("mqtt publish . petdoor/state", String(mqttStatesCString[doorStateToMqttState()]), PRIVATE);
+            }
+        }
         currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
         lastCurrentDoorState = currentDoorState;
     }
@@ -771,10 +814,28 @@ void checkForSensorChange()
     }
 }
 
-void nonCriticalTasks()
+void nonCriticalTasks(long now)
 {
     runNonCriticalTasksNow = false;
     nonCriticalTaskTimer.changePeriod(runNonCriticalTasksMaxInterval);
+    if (enableMqtt)
+    {
+        if (!mqttClient.isConnected())
+        {
+            if (now - mqttLastReconnectAttempt > mqttReconnectIntveral)
+            {
+                mqttLastReconnectAttempt = now;
+                if (reconnectMqtt())
+                {
+                    mqttLastReconnectAttempt = 0;
+                }
+            }
+        }
+        else
+        {
+            mqttClient.loop();
+        }
+    }
     if (periodicLogNow)
     {
         periodicLog(); // Log to serial port
@@ -847,4 +908,67 @@ int profile(String command)
         return 1;
     }
     return 0;
+}
+
+/**********************************************************************************************************************
+ * MQTT
+ *********************************************************************************************************************/
+bool reconnectMqtt()
+{
+    Log.info("Attempting MQTT connection...");
+    if (mqttClient.connect(mqttClientName, mqttUser, mqttPassword))
+    {
+        Log.info("MQTT Connected!");
+        Particle.publish("MQTT Connected!");
+        mqttClient.publish(mqttAvailabilityTopic, "online", false);
+        mqttClient.publish(mqttStateTopic, mqttStatesCString[doorStateToMqttState()], false);
+        mqttClient.subscribe(mqttSetTopic);
+    }
+    else
+    {
+        Log.error("MQTT connected failed!");
+    }
+    return mqttClient.isConnected();
+}
+
+int doorStateToMqttState()
+{
+    if (currentDoorState == STATE_MOVING)
+    {
+        if (desiredDoorState == STATE_OPEN)
+        {
+            return MQTT_OPENING;
+        }
+        else
+        {
+            return MQTT_CLOSING;
+        }
+    }
+    else if ((currentDoorState == STATE_OPEN) or (currentDoorState == STATE_KEEPOPEN))
+    {
+        return MQTT_OPEN;
+    }
+    else if ((currentDoorState == STATE_CLOSED) or (currentDoorState == STATE_KEEPCLOSED))
+    {
+        return MQTT_CLOSED;
+    }
+}
+
+void mqttCallback(char *topic, byte *payload, unsigned int length)
+{
+    char p[length + 1];
+    memcpy(p, payload, length);
+    p[length] = NULL;
+    String message(p);
+
+    if (strcasecmp(topic, mqttSetTopic) == 0)
+    {
+        Log.info("MQTT - Command Received: homeassistant/cover/petdoor/set", false);
+        if (publish)
+        {
+            Particle.publish("mqtt command received. petdoor/set", message, PRIVATE);
+        }
+        // DISABLED, as set command is received on broker restart and initial boot of photon.
+        // setDesiredState(message);  // Use existing Particle Cloud Function to process command
+    }
 }
