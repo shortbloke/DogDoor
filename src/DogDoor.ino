@@ -26,6 +26,7 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 
 #include <AccelStepper.h>
 #include <MQTT.h>
+#include <PublishManager.h>
 
 /**********************************************************************************************************************
  * Define GPIO Pins
@@ -54,7 +55,7 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 #define biLedOutdoor A5
 
 // Build
-const char version[] = "1.7.0";
+const char version[] = "1.8.0";
 const char buildDate[] = __DATE__ " " __TIME__;
 
 // MQTT
@@ -100,7 +101,7 @@ const int vitalsPublishInterval = 300; // 5 minutes
 bool systemResetRequested = false;
 
 // Periodic Serial Logging
-const int periodicLogInterval = 60000; //  1 minute
+const int periodicLogInterval = 120000; //  2 minute
 
 // Flags
 volatile bool periodicLogNow = false;
@@ -160,8 +161,8 @@ enum mqttStates
 
 volatile enum doorStates desiredDoorState = STATE_CLOSED;
 volatile enum doorStates currentDoorState;
-enum doorStates lastDesiredDoorState;
-enum doorStates lastCurrentDoorState;
+enum doorStates lastDesiredDoorState = STATE_CLOSED;
+enum doorStates lastCurrentDoorState = STATE_CLOSED;
 
 // Cloud Function Variables
 bool overrideDoorState = false;
@@ -194,6 +195,7 @@ enum inputs
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
 MQTT mqttClient(mqttServer, 1883, mqttCallback);
+PublishManager<> publishManager;
 
 // ApplicationWatchdog wd(wdTimeout, System.reset);
 Timer periodicLogTimer(periodicLogInterval, periodicLogTimerCallBack);
@@ -314,6 +316,7 @@ void loop()
     {
         // Ok we're not needing to move the stepper so can do some other things in the loop.
         // Otherwise we want to keep any many cycles free for running the stepper
+        publishManager.process();
         nonCriticalTasks(millis());
         if (systemResetRequested)
         {
@@ -673,8 +676,7 @@ void checkForStateChange()
         Log.info("DESIRED STATE CHANGED FROM: %s [%d] to %s [%d]",
                  doorStatesCString[lastDesiredDoorState], lastDesiredDoorState,
                  doorStatesCString[desiredDoorState], desiredDoorState);
-        Particle.publish("DesiredDoorState", doorStatesCString[desiredDoorState]);
-        Particle.publish("LastDesiredDoorState", doorStatesCString[lastDesiredDoorState]);
+        publishWithTimeStamp("DesiredDoorStateChange", String::format("{\"DesiredDoorState\":%s,\"LastDesiredDoorState\":%s}", doorStatesCString[desiredDoorState], doorStatesCString[lastDesiredDoorState]));
         desiredDoorStateStatus = String::format("%s", doorStatesCString[desiredDoorState]);
         if ((lastDesiredDoorState == STATE_CLOSED) and (desiredDoorState != STATE_KEEPCLOSED))
         {
@@ -690,16 +692,11 @@ void checkForStateChange()
         Log.info("CURRENT STATE CHANGED FROM: %s [%d] to %s [%d]",
                  doorStatesCString[lastCurrentDoorState], lastCurrentDoorState,
                  doorStatesCString[currentDoorState], currentDoorState);
-        Particle.publish("currentDoorState", doorStatesCString[currentDoorState]);
-        Particle.publish("LastCurrentDoorState", doorStatesCString[lastCurrentDoorState]);
+        publishWithTimeStamp("CurrentDoorStateChange", String::format("{\"currentDoorState\":%s,\"LastCurrentDoorState\":%s}", doorStatesCString[currentDoorState], doorStatesCString[lastCurrentDoorState]));
         if ((enableMqtt) and (mqttClient.isConnected()))
         {
             mqttClient.publish(mqttStateTopic, mqttStatesCString[doorStateToMqttState()]);
             Log.info("MQTT Publish currentDoorState change");
-            if (publish)
-            {
-                Particle.publish("mqtt publish . petdoor/state", String(mqttStatesCString[doorStateToMqttState()]), PRIVATE);
-            }
         }
         currentDoorStateStatus = String::format("%s", doorStatesCString[currentDoorState]);
         lastCurrentDoorState = currentDoorState;
@@ -790,9 +787,8 @@ void checkForSensorChange()
             Log.info("MOTION DETECTED INDOOR: %lu", indoorSensorValue);
             if (publish)
             {
-                Particle.publish("INDOOR-MOTION-DETECTED",
-                                 String::format("%lu", indoorSensorValue),
-                                 PRIVATE);
+                publishWithTimeStamp("INDOOR-MOTION-DETECTED",
+                                     String::format("%lu", indoorSensorValue));
             }
         }
         lastIndoorDetected = indoorDetected;
@@ -805,9 +801,8 @@ void checkForSensorChange()
             Log.info("MOTION DETECTED OUTDOOR: %lu", outdoorSensorValue);
             if (publish)
             {
-                Particle.publish("OUTDOOR-MOTION-DETECTED",
-                                 String::format("%lu", outdoorSensorValue),
-                                 PRIVATE);
+                publishWithTimeStamp("OUTDOOR-MOTION-DETECTED",
+                                     String::format("%lu", outdoorSensorValue));
             }
         }
         lastOutdoorDetected = outdoorDetected;
@@ -870,11 +865,11 @@ int setDesiredState(String requestedState)
     else
     {
         Log.warn("setDesiredState received invalid requestedState value: %s", requestedState.c_str());
-        Particle.publish("setDesiredState-error", requestedState, PRIVATE);
+        publishWithTimeStamp("setDesiredState-error", requestedState);
         overriddenDesiredDoorStateStatus = String::format("%s", doorStatesCString[overriddenDesiredDoorState]);
         return 0;
     }
-    Particle.publish("setDesiredState-success", requestedState, PRIVATE);
+    publishWithTimeStamp("setDesiredState-success", requestedState);
     return 1;
 }
 
@@ -883,7 +878,7 @@ int remoteCommand(String command)
     Log.info("remoteCommand: %s", command.c_str());
     if (strcasecmp(command.c_str(), "reset") == 0)
     {
-        Particle.publish("remoteCommand", "reset", PRIVATE);
+        publishWithTimeStamp("remoteCommand", "reset");
         systemResetRequested = true;
         return 1;
     }
@@ -911,6 +906,20 @@ int profile(String command)
 }
 
 /**********************************************************************************************************************
+ * PublishManager - Timestamp publish messages
+ *********************************************************************************************************************/
+// Publish "data" as a JSON char string called buffer, which contains the original data and a timestamp.
+// ex: {"data": "test: 0", "time": 1524500000}
+void publishWithTimeStamp(String eventName, String data)
+{
+    char buffer[255];
+
+    sprintf(buffer, "{\"data\": \"%s\", \"time\": %s}", data.c_str(), Time.format("%d/%m/%y %H:%M:%S").c_str());
+
+    publishManager.publish(eventName, buffer);
+}
+
+/**********************************************************************************************************************
  * MQTT
  *********************************************************************************************************************/
 bool reconnectMqtt()
@@ -919,7 +928,6 @@ bool reconnectMqtt()
     if (mqttClient.connect(mqttClientName, mqttUser, mqttPassword))
     {
         Log.info("MQTT Connected!");
-        Particle.publish("MQTT Connected!");
         mqttClient.publish(mqttAvailabilityTopic, "online", false);
         mqttClient.publish(mqttStateTopic, mqttStatesCString[doorStateToMqttState()], false);
         mqttClient.subscribe(mqttSetTopic);
@@ -948,7 +956,7 @@ int doorStateToMqttState()
     {
         return MQTT_OPEN;
     }
-    else if ((currentDoorState == STATE_CLOSED) or (currentDoorState == STATE_KEEPCLOSED))
+    else
     {
         return MQTT_CLOSED;
     }
@@ -963,11 +971,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
 
     if (strcasecmp(topic, mqttSetTopic) == 0)
     {
-        Log.info("MQTT - Command Received: homeassistant/cover/petdoor/set", false);
-        if (publish)
-        {
-            Particle.publish("mqtt command received. petdoor/set", message, PRIVATE);
-        }
+        Log.info("MQTT - Command Received: homeassistant/cover/petdoor/set");
         // DISABLED, as set command is received on broker restart and initial boot of photon.
         // setDesiredState(message);  // Use existing Particle Cloud Function to process command
     }
